@@ -1,24 +1,32 @@
-"""
-IFS .lng File Generator
+"""IFS .lng generator with recursive WEB and LU support."""
 
-Generates language files with proper CS/CE block structure
-"""
+from __future__ import annotations
 
-from typing import Dict, Any, List
+from copy import deepcopy
 from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+
+Node = Dict[str, Any]
+Data = Dict[str, Any]
 
 
 class LNGGenerator:
-    """Generator for IFS .lng language files"""
-    
-    def __init__(self, module: str, layer: str, main_type: str = "LU", sub_type: str = "Logical Unit"):
+    """Generate and merge IFS Foundation language files."""
+
+    def __init__(
+        self,
+        module: str,
+        layer: str,
+        main_type: str = "LU",
+        sub_type: Optional[str] = None,
+    ):
         self.module = module
         self.layer = layer
-        self.main_type = main_type
-        self.sub_type = sub_type
-    
+        self.main_type = main_type or "LU"
+        self.sub_type = sub_type or ("All" if self.main_type.upper() == "WEB" else "Logical Unit")
+
     def generate_header(self) -> str:
-        """Generate .lng file header"""
         header = [
             "-------------------------------------------------------",
             "File Type: IFS Foundation Language File",
@@ -29,277 +37,242 @@ class LNGGenerator:
             f"Main Type: {self.main_type}",
             f"Sub Type: {self.sub_type}",
             "Content: ",
-            "-------------------------------------------------------"
+            "-------------------------------------------------------",
         ]
-        return '\r\n'.join(header) + '\r\n'
-    
-    def generate_content(self, data: Dict[str, Any]) -> str:
-        """
-        Generate complete .lng file content
-        
-        Args:
-            data: Parsed and filtered data structure
-            
-        Returns:
-            Complete .lng file content as string
-        """
-        lines = []
-        
-        # Process each logical unit
-        for lu_id, lu_data in data['logical_units'].items():
-            lu_lines = self._generate_lu_block(lu_data, indent_level=0)
-            lines.extend(lu_lines)
-        
-        return ''.join(lines)
-    
-    def _generate_lu_block(self, lu_data: Dict[str, Any], indent_level: int) -> List[str]:
-        """Generate CS/CE block for a Logical Unit"""
-        lines = []
-        indent = '\t' * indent_level
-        
-        # CS line for LU
-        lu_name = lu_data['name']
-        lines.append(f"{indent}CS:{lu_name}^LU^Logical Unit^N^N\r\n")
-        
-        # A:Prompt for LU
-        lu_label = lu_data['label']
-        lines.append(f"{indent}\tA:Prompt^{lu_label}^\r\n")
-        
-        # Process views
-        for view_id, view_data in lu_data['views'].items():
-            view_lines = self._generate_view_block(view_data, indent_level + 1)
-            lines.extend(view_lines)
-        
-        # CE line for LU
-        lines.append(f"{indent}CE:\r\n")
-        
-        return lines
-    
-    def _generate_view_block(self, view_data: Dict[str, Any], indent_level: int) -> List[str]:
-        """Generate CS/CE block for a View"""
-        lines = []
-        indent = '\t' * indent_level
-        
-        # CS line for View
-        view_control = view_data['control']
-        lines.append(f"{indent}CS:{view_control}^LU^View^N^N\r\n")
-        
-        # Process columns (only custom fields)
-        for col_id, col_data in view_data['columns'].items():
-            if col_data['is_custom']:
-                col_lines = self._generate_column_block(col_data, indent_level + 1)
-                lines.extend(col_lines)
-        
-        # CE line for View
-        lines.append(f"{indent}CE:\r\n")
-        
-        return lines
-    
-    def _generate_column_block(self, col_data: Dict[str, Any], indent_level: int) -> List[str]:
-        """Generate CS/CE block for a Column"""
-        lines = []
-        indent = '\t' * indent_level
-        
-        # CS line for Column
-        col_control = col_data['control']
-        lines.append(f"{indent}CS:{col_control}^LU^Column^N^N\r\n")
-        
-        # A:Prompt for Column
-        col_label = col_data['label']
-        lines.append(f"{indent}\tA:Prompt^{col_label}^\r\n")
-        
-        # CE line for Column
-        lines.append(f"{indent}CE:\r\n")
-        
-        return lines
-    
-    def generate_file(self, data: Dict[str, Any], output_path: str) -> str:
-        """
-        Generate complete .lng file
-        
-        Args:
-            data: Parsed and filtered data structure
-            output_path: Path to write the file
-            
-        Returns:
-            Path to generated file
-        """
-        header = self.generate_header()
-        content = self.generate_content(data)
-        full_content = header + content
-        
-        output_file = Path(output_path)
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(output_file, 'w', encoding='utf-8', newline='') as f:
-            f.write(full_content)
-        
-        return str(output_file)
-    
-    def merge_with_existing(self, new_data: Dict[str, Any], existing_file: str) -> Dict[str, Any]:
-        """
-        Merge new data with existing .lng file to avoid duplicates
-        
-        Args:
-            new_data: New data to add
-            existing_file: Path to existing .lng file
-            
-        Returns:
-            Merged data structure
-        """
-        existing_path = Path(existing_file)
-        
-        if not existing_path.exists():
-            return new_data
-        
-        existing_data = self._parse_existing_file(existing_path)
-        
-        if existing_data['module'].upper() != new_data['module'].upper():
-            raise ValueError(
-                f"Cannot merge different modules: {existing_data['module']} and {new_data['module']}"
+        return "\r\n".join(header) + "\r\n"
+
+    def generate_content(self, data: Data) -> str:
+        lines: List[str] = []
+        for node in self._get_resources(data):
+            lines.extend(self._generate_node(node, indent_level=0))
+        return "".join(lines)
+
+    def _generate_node(self, node: Node, indent_level: int) -> List[str]:
+        indent = "\t" * indent_level
+        cs_key = node.get("cs_key") or node.get("control") or node.get("id") or ""
+        node_type = node.get("type") or node.get("subtype") or "Resource"
+        lines = [f"{indent}CS:{cs_key}^{self.main_type}^{node_type}^N^N\r\n"]
+
+        if node.get("emit_label") and node.get("label", ""):
+            attribute_key = node.get("attribute_key") or (
+                "Prompt" if self.main_type.upper() == "LU" else node.get("control") or cs_key
             )
-        
-        if existing_data['layer'].lower() != new_data['layer'].lower():
-            raise ValueError(
-                f"Cannot merge different layers: {existing_data['layer']} and {new_data['layer']}"
-            )
-        
-        for lu_id, new_lu_data in new_data['logical_units'].items():
-            if lu_id not in existing_data['logical_units']:
-                existing_data['logical_units'][lu_id] = new_lu_data
-                continue
-            
-            existing_lu_data = existing_data['logical_units'][lu_id]
-            
-            for view_id, new_view_data in new_lu_data['views'].items():
-                if view_id not in existing_lu_data['views']:
-                    existing_lu_data['views'][view_id] = new_view_data
-                    continue
-                
-                existing_view_data = existing_lu_data['views'][view_id]
-                
-                for col_id, new_col_data in new_view_data['columns'].items():
-                    if col_id not in existing_view_data['columns']:
-                        existing_view_data['columns'][col_id] = new_col_data
-        
-        return existing_data
-    
-    def _parse_existing_file(self, existing_file: Path) -> Dict[str, Any]:
-        """Parse an existing .lng file into the internal data structure"""
-        data = {
-            'module': self.module,
-            'layer': self.layer,
-            'logical_units': {}
-        }
-        
-        with open(existing_file, 'r', encoding='utf-8-sig') as f:
-            lines = f.read().splitlines()
-        
-        current_lu_id = None
-        current_view_id = None
-        current_col_id = None
-        
-        for raw_line in lines:
-            line = raw_line.strip()
-            
-            if line.startswith('Module:'):
-                data['module'] = line.split(':', 1)[1].strip()
-                continue
-            
-            if line.startswith('Layer:'):
-                data['layer'] = line.split(':', 1)[1].strip()
-                continue
-            
-            if line.startswith('CS:'):
-                parts = line[3:].split('^')
-                control = parts[0].strip()
-                node_type = parts[2].strip() if len(parts) > 2 else ''
-                
-                if node_type == 'Logical Unit':
-                    current_lu_id = control
-                    current_view_id = None
-                    current_col_id = None
-                    data['logical_units'].setdefault(current_lu_id, {
-                        'name': control,
-                        'label': control,
-                        'views': {}
-                    })
-                
-                elif node_type == 'View' and current_lu_id:
-                    current_view_id = control
-                    current_col_id = None
-                    data['logical_units'][current_lu_id]['views'].setdefault(current_view_id, {
-                        'control': control,
-                        'label': control,
-                        'columns': {}
-                    })
-                
-                elif node_type == 'Column' and current_lu_id and current_view_id:
-                    current_col_id = control
-                    data['logical_units'][current_lu_id]['views'][current_view_id]['columns'].setdefault(
-                        current_col_id,
+            lines.append(f"{indent}\tA:{attribute_key}^{node['label']}^\r\n")
+
+        for child in node.get("children", []):
+            lines.extend(self._generate_node(child, indent_level + 1))
+
+        lines.append(f"{indent}CE:\r\n")
+        return lines
+
+    @staticmethod
+    def _get_resources(data: Data) -> List[Node]:
+        if "resources" in data:
+            return data.get("resources", [])
+        # Compatibility with the original fixed LU data model.
+        return LNGGenerator._legacy_to_resources(data)
+
+    @staticmethod
+    def _legacy_to_resources(data: Data) -> List[Node]:
+        resources: List[Node] = []
+        for lu_data in data.get("logical_units", {}).values():
+            lu = {
+                "id": lu_data.get("id", lu_data.get("name", "")),
+                "cs_key": lu_data.get("name", ""),
+                "control": lu_data.get("name", ""),
+                "type": "Logical Unit",
+                "label": lu_data.get("label", ""),
+                "attribute_key": "Prompt",
+                "emit_label": bool(lu_data.get("label")),
+                "emit_translation": False,
+                "children": [],
+            }
+            for view_data in lu_data.get("views", {}).values():
+                view = {
+                    "id": view_data.get("id", view_data.get("control", "")),
+                    "cs_key": view_data.get("control", ""),
+                    "control": view_data.get("control", ""),
+                    "type": "View",
+                    "label": "",
+                    "attribute_key": "Prompt",
+                    "emit_label": False,
+                    "emit_translation": False,
+                    "children": [],
+                }
+                for col_data in view_data.get("columns", {}).values():
+                    if not col_data.get("is_custom", True):
+                        continue
+                    view["children"].append(
                         {
-                            'control': control,
-                            'label': control,
-                            'is_custom': True
+                            "id": col_data.get("id", col_data.get("control", "")),
+                            "cs_key": col_data.get("control", ""),
+                            "control": col_data.get("control", ""),
+                            "type": "Column",
+                            "label": col_data.get("label", ""),
+                            "attribute_key": "Prompt",
+                            "emit_label": True,
+                            "emit_translation": True,
+                            "children": [],
                         }
                     )
-                
+                if view["children"]:
+                    lu["children"].append(view)
+            if lu["children"]:
+                resources.append(lu)
+        return resources
+
+    def generate_file(self, data: Data, output_path: str) -> str:
+        output_file = Path(output_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        full_content = self.generate_header() + self.generate_content(data)
+        with open(output_file, "w", encoding="utf-8", newline="") as handle:
+            handle.write(full_content)
+        return str(output_file)
+
+    def merge_with_existing(self, new_data: Data, existing_file: str) -> Data:
+        existing_path = Path(existing_file)
+        if not existing_path.exists():
+            return new_data
+
+        existing_data = self._parse_existing_file(existing_path)
+        self._validate_merge_metadata(existing_data, new_data)
+
+        merged = existing_data
+        merged["version"] = new_data.get("version", merged.get("version", ""))
+        self._merge_node_lists(merged["resources"], self._get_resources(new_data))
+        merged["logical_units"] = {node["cs_key"]: node for node in merged["resources"]}
+        return merged
+
+    def _validate_merge_metadata(self, existing: Data, new: Data) -> None:
+        checks = (
+            ("module", "modules"),
+            ("layer", "layers"),
+            ("main_type", "main types"),
+        )
+        for key, description in checks:
+            old_value = str(existing.get(key) or existing.get("type") or "")
+            new_value = str(new.get(key) or new.get("type") or "")
+            if old_value.casefold() != new_value.casefold():
+                raise ValueError(
+                    f"Cannot merge different {description}: {old_value!r} and {new_value!r}"
+                )
+
+    def _merge_node_lists(self, existing_nodes: List[Node], new_nodes: Iterable[Node]) -> None:
+        index = {self._node_identity(node): node for node in existing_nodes}
+        for new_node in new_nodes:
+            identity = self._node_identity(new_node)
+            existing_node = index.get(identity)
+            if existing_node is None:
+                copied = deepcopy(new_node)
+                existing_nodes.append(copied)
+                index[identity] = copied
                 continue
-            
-            if line.startswith('A:Prompt^'):
-                parts = line.split('^')
-                label = parts[1] if len(parts) > 1 else ''
-                
-                if current_lu_id and current_view_id and current_col_id:
-                    data['logical_units'][current_lu_id]['views'][current_view_id]['columns'][current_col_id]['label'] = label
-                elif current_lu_id and current_view_id is None:
-                    data['logical_units'][current_lu_id]['label'] = label
-        
-        return data
-    
-    def get_file_name(self, module: str, layer: str) -> str:
-        """
-        Get standard file name for .lng file
-        
-        Args:
-            module: Module name (e.g., ESSPRO)
-            layer: Layer name (e.g., Cust)
-            
-        Returns:
-            File name (e.g., Esspro_LU_LogicalUnit-Cust.lng)
-        """
-        # Capitalize first letter, rest lowercase for module
-        module_formatted = module.capitalize()
-        return f"{module_formatted}_LU_LogicalUnit-{layer}.lng"
 
+            if not existing_node.get("label") and new_node.get("label"):
+                existing_node["label"] = new_node["label"]
+                existing_node["attribute_key"] = new_node.get("attribute_key")
+                existing_node["emit_label"] = new_node.get("emit_label", True)
+                existing_node["emit_translation"] = new_node.get("emit_translation", True)
+            self._merge_node_lists(
+                existing_node.setdefault("children", []), new_node.get("children", [])
+            )
 
-if __name__ == '__main__':
-    # Test the generator
-    test_data = {
-        'module': 'ESSPRO',
-        'layer': 'Cust',
-        'logical_units': {
-            'TestLU': {
-                'name': 'TestLU',
-                'label': 'Test Logical Unit',
-                'views': {
-                    'TEST_VIEW': {
-                        'control': 'TEST_VIEW',
-                        'label': 'Test View',
-                        'columns': {
-                            'C_TEST_FIELD': {
-                                'control': 'C_TEST_FIELD',
-                                'label': 'Test Field',
-                                'is_custom': True
-                            }
-                        }
-                    }
-                }
-            }
+    @staticmethod
+    def _node_identity(node: Node) -> Tuple[str, str]:
+        return (
+            str(node.get("cs_key", "")).casefold(),
+            str(node.get("type", node.get("subtype", ""))).casefold(),
+        )
+
+    def _parse_existing_file(self, existing_file: Path) -> Data:
+        lines = existing_file.read_text(encoding="utf-8-sig").splitlines()
+        headers = self.read_header(existing_file)
+        main_type = headers.get("Main Type", self.main_type)
+        data: Data = {
+            "type": main_type,
+            "main_type": main_type,
+            "sub_type": headers.get("Sub Type", self.sub_type),
+            "module": headers.get("Module", self.module),
+            "layer": headers.get("Layer", self.layer),
+            "version": "",
+            "resources": [],
         }
-    }
-    
-    generator = LNGGenerator('ESSPRO', 'Cust')
-    content = generator.generate_header() + generator.generate_content(test_data)
-    print(content)
+        stack: List[Node] = []
+
+        for raw_line in lines:
+            stripped = raw_line.strip()
+            if stripped.startswith("CS:"):
+                parts = stripped[3:].split("^")
+                cs_key = parts[0].strip()
+                node_main_type = parts[1].strip() if len(parts) > 1 else main_type
+                node_type = parts[2].strip() if len(parts) > 2 else "Resource"
+                parent_id = stack[-1]["id"] if stack else ""
+                node_id = f"{parent_id}.{cs_key}" if parent_id else cs_key
+                node: Node = {
+                    "id": node_id,
+                    "name": cs_key if not stack else "",
+                    "control": cs_key.rsplit(".", 1)[-1],
+                    "cs_key": cs_key,
+                    "type": node_type,
+                    "subtype": node_type,
+                    "label": "",
+                    "attribute_key": "Prompt" if node_main_type.upper() == "LU" else cs_key.rsplit(".", 1)[-1],
+                    "emit_label": False,
+                    "emit_translation": False,
+                    "children": [],
+                }
+                if stack:
+                    stack[-1]["children"].append(node)
+                else:
+                    data["resources"].append(node)
+                stack.append(node)
+                continue
+
+            if stripped == "CE:":
+                if stack:
+                    stack.pop()
+                continue
+
+            if stripped.startswith("A:") and stack:
+                attribute, value = self._parse_attribute_line(stripped)
+                if attribute is not None:
+                    stack[-1]["attribute_key"] = attribute
+                    stack[-1]["label"] = value
+                    stack[-1]["emit_label"] = True
+                    stack[-1]["emit_translation"] = (
+                        main_type.upper() == "WEB"
+                        or stack[-1].get("type", "").casefold() in {"column", "data field"}
+                    )
+
+        data["logical_units"] = {node["cs_key"]: node for node in data["resources"]}
+        return data
+
+    @staticmethod
+    def _parse_attribute_line(line: str) -> Tuple[Optional[str], str]:
+        body = line[2:]
+        if "^" not in body:
+            return None, ""
+        attribute, remainder = body.split("^", 1)
+        value = remainder[:-1] if remainder.endswith("^") else remainder
+        return attribute, value
+
+    @staticmethod
+    def read_header(file_path: Path) -> Dict[str, str]:
+        result: Dict[str, str] = {}
+        with open(file_path, "r", encoding="utf-8-sig") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if stripped.startswith("CS:"):
+                    break
+                if ":" in stripped:
+                    key, value = stripped.split(":", 1)
+                    if key in {"Module", "Layer", "Main Type", "Sub Type", "Language", "Culture"}:
+                        result[key] = value.strip()
+        return result
+
+    def get_file_name(self, module: str, layer: str) -> str:
+        module_formatted = module.capitalize()
+        if self.main_type.upper() == "WEB":
+            return f"{module_formatted}_WEB-{layer}.lng"
+        sub_type_compact = self.sub_type.replace(" ", "")
+        return f"{module_formatted}_{self.main_type}_{sub_type_compact}-{layer}.lng"
