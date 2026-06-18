@@ -1,25 +1,22 @@
-"""IFS .trs generator with recursive WEB and LU support."""
+"""
+IFS .trs Translation File Generator
+Generates translation files with P: and A:Prompt entries.
+Existing translations are preserved when a file is extended in a later run.
+"""
 
-from __future__ import annotations
-
-from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
-
-from lng_generator import LNGGenerator
+from typing import Any, Dict, List, Tuple
 
 
-Node = Dict[str, Any]
-Data = Dict[str, Any]
+TranslationPath = Tuple[str, ...]
 
 
 class TRSGenerator:
-    """Generate/merge IFS translation files without expanding unrelated LNG data."""
+    """Generator for IFS .trs translation files."""
 
     LANGUAGES = {
         "sv-SE": {"code": "sv", "name": "Swedish"},
         "nb-NO": {"code": "no", "name": "Norwegian"},
-        "de-DE": {"code": "de", "name": "German"},
     }
 
     def __init__(
@@ -28,18 +25,23 @@ class TRSGenerator:
         layer: str,
         language: str,
         main_type: str = "LU",
-        sub_type: Optional[str] = None,
+        sub_type: str = "Logical Unit",
     ):
         self.module = module
         self.layer = layer
         self.language = language
-        self.main_type = main_type or "LU"
-        self.sub_type = sub_type or ("All" if self.main_type.upper() == "WEB" else "Logical Unit")
-        mapping = self.LANGUAGES.get(language, {})
-        self.lang_code = mapping.get("code", language.split("-", 1)[0])
-        self.culture = language
+        self.main_type = main_type
+        self.sub_type = sub_type
+
+        if language in self.LANGUAGES:
+            self.lang_code = self.LANGUAGES[language]["code"]
+            self.culture = language
+        else:
+            self.lang_code = language.split("-")[0]
+            self.culture = language
 
     def generate_header(self) -> str:
+        """Generate .trs file header."""
         header = [
             "-------------------------------------------------------",
             "File Type: IFS Foundation Translation File",
@@ -56,230 +58,313 @@ class TRSGenerator:
         ]
         return "\r\n".join(header) + "\r\n"
 
-    def generate_content(self, data: Data, translations: Dict[str, str]) -> str:
+    def generate_content(
+        self,
+        data: Dict[str, Any],
+        translations: Dict[str, str],
+        existing_translations: Dict[TranslationPath, str] = None,
+    ) -> str:
+        """
+        Generate complete .trs file content.
+
+        Existing translations are preferred over newly generated values.
+        """
+        existing_translations = existing_translations or {}
         lines: List[str] = []
-        for node in LNGGenerator._get_resources(data):
-            lines.extend(self._generate_node(node, translations, indent_level=0))
+
+        for resource_id, resource_data in data["translatable_resources"].items():
+            lines.extend(
+                self._generate_translatable_resource_block(
+                    resource_id=resource_id,
+                    resource_data=resource_data,
+                    translations=translations,
+                    existing_translations=existing_translations,
+                    current_path=(resource_id,),
+                    indent_level=0,
+                )
+            )
+
         return "".join(lines)
 
-    def _generate_node(
+    def _generate_translatable_resource_block(
         self,
-        node: Node,
+        resource_id: str,
+        resource_data: Dict[str, Any],
         translations: Dict[str, str],
+        existing_translations: Dict[TranslationPath, str],
+        current_path: TranslationPath,
         indent_level: int,
     ) -> List[str]:
+        """Generate CS/CE block for a top-level TranslatableResource."""
+        lines: List[str] = []
         indent = "\t" * indent_level
-        cs_key = node.get("cs_key") or node.get("control") or node.get("id") or ""
-        lines = [f"{indent}CS:{cs_key}^{self.main_type}\r\n"]
 
-        if node.get("emit_translation") and node.get("label", ""):
-            original = node["label"]
-            attribute_key = node.get("attribute_key") or (
-                "Prompt" if self.main_type.upper() == "LU" else node.get("control") or cs_key
+        resource_name = resource_data["name"]
+        lines.append(f"{indent}CS:{resource_name}^{self.main_type}\r\n")
+
+        for nested_resource_id, nested_resource_data in resource_data.get("nested_resources", {}).items():
+            lines.extend(
+                self._generate_nested_resource_block(
+                    resource_id=nested_resource_id,
+                    resource_data=nested_resource_data,
+                    translations=translations,
+                    existing_translations=existing_translations,
+                    current_path=current_path + (nested_resource_id,),
+                    indent_level=indent_level + 1,
+                )
             )
-            translated = node.get("translated_label")
-            if translated is None:
-                translated = translations.get(original, original)
-            lines.append(f"{indent}\tP:{original}^\r\n")
-            lines.append(f"{indent}\tA:{attribute_key}^{translated}^\r\n")
-
-        for child in node.get("children", []):
-            lines.extend(self._generate_node(child, translations, indent_level + 1))
 
         lines.append(f"{indent}CE:\r\n")
         return lines
 
-    def merge_with_existing(
+    def _generate_nested_resource_block(
         self,
-        new_data: Data,
+        resource_id: str,
+        resource_data: Dict[str, Any],
         translations: Dict[str, str],
-        existing_file: str,
-    ) -> Data:
-        existing_path = Path(existing_file)
-        if not existing_path.exists():
-            return self._prepare_new_data(new_data, translations)
+        existing_translations: Dict[TranslationPath, str],
+        current_path: TranslationPath,
+        indent_level: int,
+    ) -> List[str]:
+        """Generate CS/CE block for a nested Resource."""
+        lines: List[str] = []
+        indent = "\t" * indent_level
 
-        existing_data = self._parse_existing_file(existing_path)
-        self._validate_merge_metadata(existing_data, new_data)
-        self._merge_node_lists(
-            existing_data["resources"],
-            LNGGenerator._get_resources(new_data),
-            translations,
-        )
-        return existing_data
+        resource_control = resource_data["control"]
+        lines.append(f"{indent}CS:{resource_control}^{self.main_type}\r\n")
 
-    def _prepare_new_data(self, new_data: Data, translations: Dict[str, str]) -> Data:
-        prepared = deepcopy(new_data)
-        for node in LNGGenerator._get_resources(prepared):
-            self._apply_new_translations(node, translations)
-        return prepared
-
-    def _apply_new_translations(self, node: Node, translations: Dict[str, str]) -> None:
-        if node.get("emit_translation") and node.get("label", ""):
-            node["translated_label"] = translations.get(node["label"], node["label"])
-        for child in node.get("children", []):
-            self._apply_new_translations(child, translations)
-
-    def _merge_node_lists(
-        self,
-        existing_nodes: List[Node],
-        new_nodes: Iterable[Node],
-        translations: Dict[str, str],
-    ) -> None:
-        index = {str(node.get("cs_key", "")).casefold(): node for node in existing_nodes}
-        for new_node in new_nodes:
-            key = str(new_node.get("cs_key", "")).casefold()
-            existing_node = index.get(key)
-            if existing_node is None:
-                copied = deepcopy(new_node)
-                self._apply_new_translations(copied, translations)
-                existing_nodes.append(copied)
-                index[key] = copied
-                continue
-
-            # Existing P/A values have priority. Add translation only when the
-            # block previously had no translation entry.
-            if (
-                not existing_node.get("emit_translation")
-                and new_node.get("emit_translation")
-                and new_node.get("label")
-            ):
-                existing_node["label"] = new_node["label"]
-                existing_node["attribute_key"] = new_node.get("attribute_key")
-                existing_node["emit_translation"] = True
-                existing_node["translated_label"] = translations.get(
-                    new_node["label"], new_node["label"]
-                )
-
-            self._merge_node_lists(
-                existing_node.setdefault("children", []),
-                new_node.get("children", []),
-                translations,
+        if resource_data.get("is_custom", False):
+            original_label = resource_data.get("label", "")
+            translated_label = existing_translations.get(
+                current_path,
+                translations.get(original_label, original_label),
             )
 
-    def _parse_existing_file(self, existing_file: Path) -> Data:
-        lines = existing_file.read_text(encoding="utf-8-sig").splitlines()
-        headers = LNGGenerator.read_header(existing_file)
-        main_type = headers.get("Main Type", self.main_type)
-        data: Data = {
-            "type": main_type,
-            "main_type": main_type,
-            "sub_type": headers.get("Sub Type", self.sub_type),
-            "module": headers.get("Module", self.module),
-            "layer": headers.get("Layer", self.layer),
-            "culture": headers.get("Culture", self.culture),
-            "resources": [],
-        }
-        stack: List[Node] = []
+            lines.append(f"{indent}\tP:{original_label}^\r\n")
+            lines.append(f"{indent}\tA:Prompt^{translated_label}^\r\n")
+
+        for nested_resource_id, nested_resource_data in resource_data.get("nested_resources", {}).items():
+            lines.extend(
+                self._generate_nested_resource_block(
+                    resource_id=nested_resource_id,
+                    resource_data=nested_resource_data,
+                    translations=translations,
+                    existing_translations=existing_translations,
+                    current_path=current_path + (nested_resource_id,),
+                    indent_level=indent_level + 1,
+                )
+            )
+
+        lines.append(f"{indent}CE:\r\n")
+        return lines
+
+    def _generate_lu_block(
+        self,
+        resource_id: str,
+        resource_data: Dict[str, Any],
+        translations: Dict[str, str],
+        existing_translations: Dict[TranslationPath, str],
+        indent_level: int,
+    ) -> List[str]:
+        """Backward-compatible wrapper for old method name."""
+        return self._generate_translatable_resource_block(
+            resource_id=resource_id,
+            resource_data=resource_data,
+            translations=translations,
+            existing_translations=existing_translations,
+            current_path=(resource_id,),
+            indent_level=indent_level,
+        )
+
+    def _generate_view_block(
+        self,
+        parent_resource_id: str,
+        nested_resource_id: str,
+        nested_resource_data: Dict[str, Any],
+        translations: Dict[str, str],
+        existing_translations: Dict[TranslationPath, str],
+        indent_level: int,
+    ) -> List[str]:
+        """Backward-compatible wrapper for old method name."""
+        return self._generate_nested_resource_block(
+            resource_id=nested_resource_id,
+            resource_data=nested_resource_data,
+            translations=translations,
+            existing_translations=existing_translations,
+            current_path=(parent_resource_id, nested_resource_id),
+            indent_level=indent_level,
+        )
+
+    def _generate_column_block(
+        self,
+        top_resource_id: str,
+        parent_resource_id: str,
+        nested_resource_id: str,
+        nested_resource_data: Dict[str, Any],
+        translations: Dict[str, str],
+        existing_translations: Dict[TranslationPath, str],
+        indent_level: int,
+    ) -> List[str]:
+        """Backward-compatible wrapper for old method name."""
+        return self._generate_nested_resource_block(
+            resource_id=nested_resource_id,
+            resource_data=nested_resource_data,
+            translations=translations,
+            existing_translations=existing_translations,
+            current_path=(top_resource_id, parent_resource_id, nested_resource_id),
+            indent_level=indent_level,
+        )
+
+    def read_existing_translations(
+        self,
+        existing_file: str,
+    ) -> Dict[TranslationPath, str]:
+        """
+        Read translations from an existing .trs file.
+
+        The hierarchy in a .trs file does not contain explicit node type
+        values. Therefore the parser uses the nesting depth and supports
+        any number of nested resources.
+        """
+        existing_path = Path(existing_file)
+
+        if not existing_path.exists():
+            return {}
+
+        translations: Dict[TranslationPath, str] = {}
+
+        with open(
+            existing_path,
+            "r",
+            encoding="utf-8-sig",
+        ) as file:
+            lines = file.read().splitlines()
+
+        path_stack: List[str] = []
 
         for raw_line in lines:
             stripped = raw_line.strip()
+
             if stripped.startswith("CS:"):
-                parts = stripped[3:].split("^")
-                cs_key = parts[0].strip()
-                parent_id = stack[-1]["id"] if stack else ""
-                node: Node = {
-                    "id": f"{parent_id}.{cs_key}" if parent_id else cs_key,
-                    "name": cs_key if not stack else "",
-                    "control": cs_key.rsplit(".", 1)[-1],
-                    "cs_key": cs_key,
-                    "type": "",
-                    "subtype": "",
-                    "label": "",
-                    "translated_label": None,
-                    "attribute_key": "Prompt" if main_type.upper() == "LU" else cs_key.rsplit(".", 1)[-1],
-                    "emit_label": False,
-                    "emit_translation": False,
-                    "children": [],
-                }
-                if stack:
-                    stack[-1]["children"].append(node)
+                control = stripped[3:].split("^", 1)[0].strip()
+                indentation = len(raw_line) - len(raw_line.lstrip("\t"))
+
+                if not control:
+                    continue
+
+                if len(path_stack) <= indentation:
+                    path_stack.append(control)
                 else:
-                    data["resources"].append(node)
-                stack.append(node)
+                    path_stack[indentation] = control
+                    del path_stack[indentation + 1:]
+
                 continue
 
-            if stripped == "CE:":
-                if stack:
-                    stack.pop()
-                continue
-
-            if stripped.startswith("P:") and stack:
-                stack[-1]["label"] = self._parse_prompt_line(stripped)
-                stack[-1]["emit_translation"] = True
-                continue
-
-            if stripped.startswith("A:") and stack:
-                attribute, value = LNGGenerator._parse_attribute_line(stripped)
-                if attribute is not None:
-                    stack[-1]["attribute_key"] = attribute
-                    stack[-1]["translated_label"] = value
-                    stack[-1]["emit_translation"] = True
-
-        return data
-
-    def _validate_merge_metadata(self, existing: Data, new: Data) -> None:
-        comparisons = (
-            ("module", self.module),
-            ("layer", self.layer),
-            ("main_type", self.main_type),
-            ("culture", self.culture),
-        )
-        for key, expected in comparisons:
-            actual = str(existing.get(key, ""))
-            if actual and actual.casefold() != str(expected).casefold():
-                raise ValueError(
-                    f"Cannot merge TRS with different {key}: {actual!r} and {expected!r}"
+            if stripped.startswith("A:Prompt^") and path_stack:
+                prompt_parts = stripped.split("^")
+                translated_label = (
+                    prompt_parts[1] if len(prompt_parts) > 1 else ""
                 )
+                translations[tuple(path_stack)] = translated_label
 
-    @staticmethod
-    def _parse_prompt_line(line: str) -> str:
-        value = line[2:]
-        return value[:-1] if value.endswith("^") else value
-
-    def read_existing_translations(self, existing_file: str) -> Dict[Tuple[Tuple[str, ...], str], str]:
-        """Backward-compatible translation lookup helper."""
-        path = Path(existing_file)
-        if not path.exists():
-            return {}
-        data = self._parse_existing_file(path)
-        result: Dict[Tuple[Tuple[str, ...], str], str] = {}
-
-        def visit(node: Node, parent: Tuple[str, ...]) -> None:
-            current = parent + (node["cs_key"],)
-            if node.get("emit_translation") and node.get("translated_label") is not None:
-                result[(current, node.get("attribute_key", ""))] = node["translated_label"]
-            for child in node.get("children", []):
-                visit(child, current)
-
-        for root in data["resources"]:
-            visit(root, ())
-        return result
+        return translations
 
     def generate_file(
         self,
-        data: Data,
+        data: Dict[str, Any],
         translations: Dict[str, str],
         output_path: str,
-        existing_file: Optional[str] = None,
     ) -> str:
-        source = existing_file or (output_path if Path(output_path).exists() else None)
-        if source:
-            data_to_write = self.merge_with_existing(data, translations, source)
-        else:
-            data_to_write = self._prepare_new_data(data, translations)
+        """
+        Generate or update a complete .trs file.
 
-        full_content = self.generate_header() + self.generate_content(data_to_write, translations)
+        Existing translations are read before the file is rewritten.
+        This preserves manual or previously generated translations for
+        entries that already exist.
+        """
         output_file = Path(output_path)
+
+        existing_translations = self.read_existing_translations(
+            str(output_file)
+        )
+
+        header = self.generate_header()
+        content = self.generate_content(
+            data=data,
+            translations=translations,
+            existing_translations=existing_translations,
+        )
+        full_content = header + content
+
         output_file.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_file, "w", encoding="utf-8", newline="") as handle:
-            handle.write(full_content)
+
+        with open(
+            output_file,
+            "w",
+            encoding="utf-8",
+            newline="",
+        ) as file:
+            file.write(full_content)
+
         return str(output_file)
 
-    def get_file_name(self, module: str, layer: str, language: str) -> str:
+    def get_file_name(
+        self,
+        module: str,
+        layer: str,
+        language: str,
+    ) -> str:
+        """
+        Get standard file name for .trs file.
+
+        Example:
+            Esspro_LU_LogicalUnit-Cust-sv.trs
+        """
         module_formatted = module.capitalize()
-        lang_code = self.LANGUAGES.get(language, {}).get("code", language.split("-", 1)[0])
-        if self.main_type.upper() == "WEB":
-            return f"{module_formatted}_WEB-{layer}-{lang_code}.trs"
-        sub_type_compact = self.sub_type.replace(" ", "")
-        return f"{module_formatted}_{self.main_type}_{sub_type_compact}-{layer}-{lang_code}.trs"
+        sub_type_formatted = "".join((self.sub_type or "").split())
+
+        if language in self.LANGUAGES:
+            lang_code = self.LANGUAGES[language]["code"]
+        else:
+            lang_code = language.split("-")[0]
+
+        return (
+            f"{module_formatted}_{self.main_type}_{sub_type_formatted}-"
+            f"{layer}-{lang_code}.trs"
+        )
+
+
+if __name__ == "__main__":
+    test_data = {
+        "module": "ESSPRO",
+        "layer": "Cust",
+        "translatable_resources": {
+            "TestLU": {
+                "name": "TestLU",
+                "label": "Test Logical Unit",
+                "nested_resources": {
+                    "TEST_VIEW": {
+                        "control": "TEST_VIEW",
+                        "label": "Test View",
+                        "nested_resources": {
+                            "C_TEST_FIELD": {
+                                "control": "C_TEST_FIELD",
+                                "label": "Test Field",
+                                "is_custom": True,
+                                "nested_resources": {},
+                            }
+                        },
+                    }
+                },
+            }
+        },
+    }
+
+    test_translations = {"Test Field": "Testfält"}
+
+    generator = TRSGenerator("ESSPRO", "Cust", "sv-SE")
+    content = generator.generate_header() + generator.generate_content(
+        test_data,
+        test_translations,
+    )
+    print(content)
