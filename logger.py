@@ -45,23 +45,22 @@ class IFSLogger:
     def log_parsing_complete(self, stats: Dict[str, int]):
         """Log parsing completion with statistics"""
         self.info(f"XML parsing complete")
-        self.info(f"  Logical Units: {stats['total_logical_units']}")
-        self.info(f"  Views: {stats['total_views']}")
-        self.info(f"  Total Columns: {stats['total_columns']}")
-        self.info(f"  Custom Columns (C_*): {stats['custom_columns']}")
-        self.info(f"  Standard Columns (skipped): {stats['standard_columns']}")
+        self.info(f"  Translatable Resources: {stats['total_translatable_resources']}")
+        self.info(f"  Total Nested Resources: {stats['total_nested_resources']}")
+        self.info(f"  Custom Resources (C_*): {stats['custom_resources']}")
+        self.info(f"  Standard Resources (skipped): {stats['standard_resources']}")
         
     def log_field_processed(self, field_name: str, label: str):
         """Log processing of a custom field"""
-        self.info(f"Processing custom field: {field_name} -> '{label}'")
+        self.info(f"Processing custom resource: {field_name} -> '{label}'")
         
     def log_field_skipped(self, field_name: str, reason: str):
         """Log skipping of a field"""
-        self.info(f"Skipping field: {field_name} (Reason: {reason})")
+        self.info(f"Skipping resource: {field_name} (Reason: {reason})")
         
-    def log_translation_start(self, language: str, field_count: int):
+    def log_translation_start(self, language: str, resource_count: int):
         """Log start of translation"""
-        self.info(f"Starting translation to {language}: {field_count} fields")
+        self.info(f"Starting translation to {language}: {resource_count} fields")
         
     def log_translation_complete(self, language: str):
         """Log translation completion"""
