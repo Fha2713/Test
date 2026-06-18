@@ -1,32 +1,32 @@
-"""IFS .lng generator with recursive WEB and LU support."""
-
-from __future__ import annotations
+"""
+IFS .lng File Generator
+Generates language files with proper CS/CE block structure.
+Existing files are parsed and merged so repeated runs extend the output
+without duplicating resource paths.
+"""
 
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
-
-
-Node = Dict[str, Any]
-Data = Dict[str, Any]
+from typing import Any, Dict, List
 
 
 class LNGGenerator:
-    """Generate and merge IFS Foundation language files."""
+    """Generator for IFS .lng language files."""
 
     def __init__(
         self,
         module: str,
         layer: str,
         main_type: str = "LU",
-        sub_type: Optional[str] = None,
+        sub_type: str = "Logical Unit",
     ):
         self.module = module
         self.layer = layer
-        self.main_type = main_type or "LU"
-        self.sub_type = sub_type or ("All" if self.main_type.upper() == "WEB" else "Logical Unit")
+        self.main_type = main_type
+        self.sub_type = sub_type
 
     def generate_header(self) -> str:
+        """Generate .lng file header."""
         header = [
             "-------------------------------------------------------",
             "File Type: IFS Foundation Language File",
@@ -41,238 +41,401 @@ class LNGGenerator:
         ]
         return "\r\n".join(header) + "\r\n"
 
-    def generate_content(self, data: Data) -> str:
+    def generate_content(self, data: Dict[str, Any]) -> str:
+        """
+        Generate complete .lng file content.
+
+        Args:
+            data: Parsed and filtered data structure.
+
+        Returns:
+            Complete .lng file content as string.
+        """
         lines: List[str] = []
-        for node in self._get_resources(data):
-            lines.extend(self._generate_node(node, indent_level=0))
+
+        for resource_data in data["translatable_resources"].values():
+            lines.extend(self._generate_translatable_resource_block(resource_data, indent_level=0))
+
         return "".join(lines)
 
-    def _generate_node(self, node: Node, indent_level: int) -> List[str]:
+    def _generate_translatable_resource_block(
+        self,
+        resource_data: Dict[str, Any],
+        indent_level: int,
+    ) -> List[str]:
+        """Generate CS/CE block for a top-level TranslatableResource."""
+        lines: List[str] = []
         indent = "\t" * indent_level
-        cs_key = node.get("cs_key") or node.get("control") or node.get("id") or ""
-        node_type = node.get("type") or node.get("subtype") or "Resource"
-        lines = [f"{indent}CS:{cs_key}^{self.main_type}^{node_type}^N^N\r\n"]
 
-        if node.get("emit_label") and node.get("label", ""):
-            attribute_key = node.get("attribute_key") or (
-                "Prompt" if self.main_type.upper() == "LU" else node.get("control") or cs_key
+        resource_name = resource_data["name"]
+        resource_type = resource_data.get("type") or self.sub_type
+        lines.append(f"{indent}CS:{resource_name}^{self.main_type}^{resource_type}^N^N\r\n")
+
+        resource_label = resource_data.get("label", "")
+        if resource_label:
+            lines.append(f"{indent}\tA:Prompt^{resource_label}^\r\n")
+
+        for nested_resource_data in resource_data.get("nested_resources", {}).values():
+            lines.extend(
+                self._generate_nested_resource_block(
+                    nested_resource_data,
+                    indent_level + 1,
+                )
             )
-            lines.append(f"{indent}\tA:{attribute_key}^{node['label']}^\r\n")
-
-        for child in node.get("children", []):
-            lines.extend(self._generate_node(child, indent_level + 1))
 
         lines.append(f"{indent}CE:\r\n")
         return lines
 
-    @staticmethod
-    def _get_resources(data: Data) -> List[Node]:
-        if "resources" in data:
-            return data.get("resources", [])
-        # Compatibility with the original fixed LU data model.
-        return LNGGenerator._legacy_to_resources(data)
+    def _generate_nested_resource_block(
+        self,
+        resource_data: Dict[str, Any],
+        indent_level: int,
+    ) -> List[str]:
+        """Generate CS/CE block for a nested Resource."""
+        lines: List[str] = []
+        indent = "\t" * indent_level
 
-    @staticmethod
-    def _legacy_to_resources(data: Data) -> List[Node]:
-        resources: List[Node] = []
-        for lu_data in data.get("logical_units", {}).values():
-            lu = {
-                "id": lu_data.get("id", lu_data.get("name", "")),
-                "cs_key": lu_data.get("name", ""),
-                "control": lu_data.get("name", ""),
-                "type": "Logical Unit",
-                "label": lu_data.get("label", ""),
-                "attribute_key": "Prompt",
-                "emit_label": bool(lu_data.get("label")),
-                "emit_translation": False,
-                "children": [],
-            }
-            for view_data in lu_data.get("views", {}).values():
-                view = {
-                    "id": view_data.get("id", view_data.get("control", "")),
-                    "cs_key": view_data.get("control", ""),
-                    "control": view_data.get("control", ""),
-                    "type": "View",
-                    "label": "",
-                    "attribute_key": "Prompt",
-                    "emit_label": False,
-                    "emit_translation": False,
-                    "children": [],
-                }
-                for col_data in view_data.get("columns", {}).values():
-                    if not col_data.get("is_custom", True):
-                        continue
-                    view["children"].append(
-                        {
-                            "id": col_data.get("id", col_data.get("control", "")),
-                            "cs_key": col_data.get("control", ""),
-                            "control": col_data.get("control", ""),
-                            "type": "Column",
-                            "label": col_data.get("label", ""),
-                            "attribute_key": "Prompt",
-                            "emit_label": True,
-                            "emit_translation": True,
-                            "children": [],
-                        }
-                    )
-                if view["children"]:
-                    lu["children"].append(view)
-            if lu["children"]:
-                resources.append(lu)
-        return resources
+        resource_control = resource_data["control"]
+        resource_type = resource_data.get("subtype") or "Resource"
+        lines.append(f"{indent}CS:{resource_control}^{self.main_type}^{resource_type}^N^N\r\n")
 
-    def generate_file(self, data: Data, output_path: str) -> str:
-        output_file = Path(output_path)
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        full_content = self.generate_header() + self.generate_content(data)
-        with open(output_file, "w", encoding="utf-8", newline="") as handle:
-            handle.write(full_content)
-        return str(output_file)
+        resource_label = resource_data.get("label", "")
+        if resource_label and resource_data.get("is_custom", False):
+            lines.append(f"{indent}\tA:Prompt^{resource_label}^\r\n")
 
-    def merge_with_existing(self, new_data: Data, existing_file: str) -> Data:
-        existing_path = Path(existing_file)
-        if not existing_path.exists():
-            return new_data
-
-        existing_data = self._parse_existing_file(existing_path)
-        self._validate_merge_metadata(existing_data, new_data)
-
-        merged = existing_data
-        merged["version"] = new_data.get("version", merged.get("version", ""))
-        self._merge_node_lists(merged["resources"], self._get_resources(new_data))
-        merged["logical_units"] = {node["cs_key"]: node for node in merged["resources"]}
-        return merged
-
-    def _validate_merge_metadata(self, existing: Data, new: Data) -> None:
-        checks = (
-            ("module", "modules"),
-            ("layer", "layers"),
-            ("main_type", "main types"),
-        )
-        for key, description in checks:
-            old_value = str(existing.get(key) or existing.get("type") or "")
-            new_value = str(new.get(key) or new.get("type") or "")
-            if old_value.casefold() != new_value.casefold():
-                raise ValueError(
-                    f"Cannot merge different {description}: {old_value!r} and {new_value!r}"
+        for nested_resource_data in resource_data.get("nested_resources", {}).values():
+            lines.extend(
+                self._generate_nested_resource_block(
+                    nested_resource_data,
+                    indent_level + 1,
                 )
-
-    def _merge_node_lists(self, existing_nodes: List[Node], new_nodes: Iterable[Node]) -> None:
-        index = {self._node_identity(node): node for node in existing_nodes}
-        for new_node in new_nodes:
-            identity = self._node_identity(new_node)
-            existing_node = index.get(identity)
-            if existing_node is None:
-                copied = deepcopy(new_node)
-                existing_nodes.append(copied)
-                index[identity] = copied
-                continue
-
-            if not existing_node.get("label") and new_node.get("label"):
-                existing_node["label"] = new_node["label"]
-                existing_node["attribute_key"] = new_node.get("attribute_key")
-                existing_node["emit_label"] = new_node.get("emit_label", True)
-                existing_node["emit_translation"] = new_node.get("emit_translation", True)
-            self._merge_node_lists(
-                existing_node.setdefault("children", []), new_node.get("children", [])
             )
 
-    @staticmethod
-    def _node_identity(node: Node) -> Tuple[str, str]:
-        return (
-            str(node.get("cs_key", "")).casefold(),
-            str(node.get("type", node.get("subtype", ""))).casefold(),
+        lines.append(f"{indent}CE:\r\n")
+        return lines
+
+    def _generate_lu_block(
+        self,
+        resource_data: Dict[str, Any],
+        indent_level: int,
+    ) -> List[str]:
+        """Backward-compatible wrapper for old method name."""
+        return self._generate_translatable_resource_block(resource_data, indent_level)
+
+    def _generate_view_block(
+        self,
+        resource_data: Dict[str, Any],
+        indent_level: int,
+    ) -> List[str]:
+        """Backward-compatible wrapper for old method name."""
+        return self._generate_nested_resource_block(resource_data, indent_level)
+
+    def _generate_column_block(
+        self,
+        resource_data: Dict[str, Any],
+        indent_level: int,
+    ) -> List[str]:
+        """Backward-compatible wrapper for old method name."""
+        return self._generate_nested_resource_block(resource_data, indent_level)
+
+    def generate_file(
+        self,
+        data: Dict[str, Any],
+        output_path: str,
+    ) -> str:
+        """
+        Generate complete .lng file.
+
+        The target file is rewritten from the already merged data structure.
+        """
+        header = self.generate_header()
+        content = self.generate_content(data)
+        full_content = header + content
+
+        output_file = Path(output_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(
+            output_file,
+            "w",
+            encoding="utf-8",
+            newline="",
+        ) as file:
+            file.write(full_content)
+
+        return str(output_file)
+
+    def merge_with_existing(
+        self,
+        new_data: Dict[str, Any],
+        existing_file: str,
+    ) -> Dict[str, Any]:
+        """
+        Merge new XML data with an existing .lng file.
+
+        A duplicate is identified by the complete resource path.
+        Existing entries are retained. Only missing resources are added.
+        """
+        existing_path = Path(existing_file)
+
+        if not existing_path.exists():
+            return deepcopy(new_data)
+
+        existing_data = self._parse_existing_file(existing_path)
+
+        if not existing_data["translatable_resources"]:
+            return deepcopy(new_data)
+
+        return self._merge_data(existing_data, new_data)
+
+    def _merge_data(
+        self,
+        existing_data: Dict[str, Any],
+        new_data: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Merge two internal data structures without duplicate paths."""
+        merged_data = deepcopy(existing_data)
+
+        existing_module = merged_data.get("module")
+        new_module = new_data.get("module")
+
+        if (
+            existing_module
+            and new_module
+            and existing_module.upper() != new_module.upper()
+        ):
+            raise ValueError(
+                "Cannot merge different modules: "
+                f"{existing_module} and {new_module}"
+            )
+
+        existing_layer = merged_data.get("layer")
+        new_layer = new_data.get("layer")
+
+        if (
+            existing_layer
+            and new_layer
+            and existing_layer.lower() != new_layer.lower()
+        ):
+            raise ValueError(
+                "Cannot merge different layers: "
+                f"{existing_layer} and {new_layer}"
+            )
+
+        merged_data["module"] = new_module or existing_module or self.module
+        merged_data["layer"] = new_layer or existing_layer or self.layer
+
+        merged_resources = merged_data.setdefault(
+            "translatable_resources",
+            {},
         )
 
-    def _parse_existing_file(self, existing_file: Path) -> Data:
-        lines = existing_file.read_text(encoding="utf-8-sig").splitlines()
-        headers = self.read_header(existing_file)
-        main_type = headers.get("Main Type", self.main_type)
-        data: Data = {
-            "type": main_type,
-            "main_type": main_type,
-            "sub_type": headers.get("Sub Type", self.sub_type),
-            "module": headers.get("Module", self.module),
-            "layer": headers.get("Layer", self.layer),
-            "version": "",
-            "resources": [],
+        for resource_id, new_resource_data in new_data.get(
+            "translatable_resources",
+            {},
+        ).items():
+            if resource_id not in merged_resources:
+                merged_resources[resource_id] = deepcopy(new_resource_data)
+                continue
+
+            existing_resource_data = merged_resources[resource_id]
+            self._merge_resource_data(
+                existing_resource_data,
+                new_resource_data,
+                resource_id,
+            )
+
+        return merged_data
+
+    def _merge_resource_data(
+        self,
+        existing_resource_data: Dict[str, Any],
+        new_resource_data: Dict[str, Any],
+        resource_id: str,
+    ):
+        """Merge one resource node recursively."""
+        if not existing_resource_data.get("name"):
+            existing_resource_data["name"] = new_resource_data.get("name", resource_id)
+
+        if not existing_resource_data.get("control"):
+            existing_resource_data["control"] = new_resource_data.get("control")
+
+        if not existing_resource_data.get("label"):
+            existing_resource_data["label"] = new_resource_data.get(
+                "label",
+                existing_resource_data.get("name") or existing_resource_data.get("control") or resource_id,
+            )
+
+        if not existing_resource_data.get("type"):
+            existing_resource_data["type"] = new_resource_data.get("type")
+
+        if not existing_resource_data.get("subtype"):
+            existing_resource_data["subtype"] = new_resource_data.get("subtype")
+
+        existing_resource_data["is_custom"] = (
+            existing_resource_data.get("is_custom", False)
+            or new_resource_data.get("is_custom", False)
+        )
+
+        existing_nested_resources = existing_resource_data.setdefault(
+            "nested_resources",
+            {},
+        )
+
+        for nested_resource_id, new_nested_resource_data in new_resource_data.get(
+            "nested_resources",
+            {},
+        ).items():
+            if nested_resource_id not in existing_nested_resources:
+                existing_nested_resources[nested_resource_id] = deepcopy(new_nested_resource_data)
+                continue
+
+            self._merge_resource_data(
+                existing_nested_resources[nested_resource_id],
+                new_nested_resource_data,
+                nested_resource_id,
+            )
+
+    def _parse_existing_file(
+        self,
+        existing_file: Path,
+    ) -> Dict[str, Any]:
+        """
+        Parse an existing .lng file into the internal data structure.
+
+        The parser uses indentation only for hierarchy depth and keeps all
+        resource types from the CS line.
+        """
+        data: Dict[str, Any] = {
+            "type": self.main_type,
+            "sub_type": self.sub_type,
+            "module": self.module,
+            "layer": self.layer,
+            "translatable_resources": {},
         }
-        stack: List[Node] = []
+
+        with open(
+            existing_file,
+            "r",
+            encoding="utf-8-sig",
+        ) as file:
+            lines = file.read().splitlines()
+
+        resource_stack: List[Dict[str, Any]] = []
 
         for raw_line in lines:
-            stripped = raw_line.strip()
-            if stripped.startswith("CS:"):
-                parts = stripped[3:].split("^")
-                cs_key = parts[0].strip()
-                node_main_type = parts[1].strip() if len(parts) > 1 else main_type
-                node_type = parts[2].strip() if len(parts) > 2 else "Resource"
-                parent_id = stack[-1]["id"] if stack else ""
-                node_id = f"{parent_id}.{cs_key}" if parent_id else cs_key
-                node: Node = {
-                    "id": node_id,
-                    "name": cs_key if not stack else "",
-                    "control": cs_key.rsplit(".", 1)[-1],
-                    "cs_key": cs_key,
-                    "type": node_type,
-                    "subtype": node_type,
-                    "label": "",
-                    "attribute_key": "Prompt" if node_main_type.upper() == "LU" else cs_key.rsplit(".", 1)[-1],
-                    "emit_label": False,
-                    "emit_translation": False,
-                    "children": [],
-                }
-                if stack:
-                    stack[-1]["children"].append(node)
+            line = raw_line.strip()
+
+            if line.startswith("Module:"):
+                data["module"] = line.split(":", 1)[1].strip()
+                continue
+
+            if line.startswith("Layer:"):
+                data["layer"] = line.split(":", 1)[1].strip()
+                continue
+
+            if line.startswith("CS:"):
+                parts = line[3:].split("^")
+                control = parts[0].strip() if parts else ""
+                main_type = parts[1].strip() if len(parts) > 1 else self.main_type
+                resource_type = parts[2].strip() if len(parts) > 2 else ""
+                indentation = len(raw_line) - len(raw_line.lstrip("\t"))
+
+                if not control:
+                    continue
+
+                data["type"] = main_type or data.get("type")
+
+                if indentation == 0:
+                    data["sub_type"] = resource_type or self.sub_type
+                    resource_data = data["translatable_resources"].setdefault(
+                        control,
+                        {
+                            "name": control,
+                            "type": resource_type or self.sub_type,
+                            "label": control,
+                            "nested_resources": {},
+                        },
+                    )
                 else:
-                    data["resources"].append(node)
-                stack.append(node)
-                continue
-
-            if stripped == "CE:":
-                if stack:
-                    stack.pop()
-                continue
-
-            if stripped.startswith("A:") and stack:
-                attribute, value = self._parse_attribute_line(stripped)
-                if attribute is not None:
-                    stack[-1]["attribute_key"] = attribute
-                    stack[-1]["label"] = value
-                    stack[-1]["emit_label"] = True
-                    stack[-1]["emit_translation"] = (
-                        main_type.upper() == "WEB"
-                        or stack[-1].get("type", "").casefold() in {"column", "data field"}
+                    parent_data = resource_stack[indentation - 1]
+                    resource_data = parent_data.setdefault(
+                        "nested_resources",
+                        {},
+                    ).setdefault(
+                        control,
+                        {
+                            "control": control,
+                            "subtype": resource_type or "Resource",
+                            "label": control,
+                            "is_custom": control.startswith("C_"),
+                            "nested_resources": {},
+                        },
                     )
 
-        data["logical_units"] = {node["cs_key"]: node for node in data["resources"]}
+                if len(resource_stack) <= indentation:
+                    resource_stack.append(resource_data)
+                else:
+                    resource_stack[indentation] = resource_data
+                    del resource_stack[indentation + 1:]
+
+                continue
+
+            if line.startswith("A:Prompt^"):
+                prompt_parts = line.split("^")
+                label = prompt_parts[1] if len(prompt_parts) > 1 else ""
+                indentation = len(raw_line) - len(raw_line.lstrip("\t"))
+                resource_indent = max(indentation - 1, 0)
+
+                if len(resource_stack) > resource_indent:
+                    resource_stack[resource_indent]["label"] = label
+
         return data
 
-    @staticmethod
-    def _parse_attribute_line(line: str) -> Tuple[Optional[str], str]:
-        body = line[2:]
-        if "^" not in body:
-            return None, ""
-        attribute, remainder = body.split("^", 1)
-        value = remainder[:-1] if remainder.endswith("^") else remainder
-        return attribute, value
+    def get_file_name(
+        self,
+        module: str,
+        layer: str,
+    ) -> str:
+        """
+        Get standard file name for .lng file.
 
-    @staticmethod
-    def read_header(file_path: Path) -> Dict[str, str]:
-        result: Dict[str, str] = {}
-        with open(file_path, "r", encoding="utf-8-sig") as handle:
-            for line in handle:
-                stripped = line.strip()
-                if stripped.startswith("CS:"):
-                    break
-                if ":" in stripped:
-                    key, value = stripped.split(":", 1)
-                    if key in {"Module", "Layer", "Main Type", "Sub Type", "Language", "Culture"}:
-                        result[key] = value.strip()
-        return result
-
-    def get_file_name(self, module: str, layer: str) -> str:
+        Example:
+            Esspro_LU_LogicalUnit-Cust.lng
+        """
         module_formatted = module.capitalize()
-        if self.main_type.upper() == "WEB":
-            return f"{module_formatted}_WEB-{layer}.lng"
-        sub_type_compact = self.sub_type.replace(" ", "")
-        return f"{module_formatted}_{self.main_type}_{sub_type_compact}-{layer}.lng"
+        sub_type_formatted = "".join((self.sub_type or "").split())
+        return f"{module_formatted}_{self.main_type}_{sub_type_formatted}-{layer}.lng"
+
+
+if __name__ == "__main__":
+    test_data = {
+        "module": "ESSPRO",
+        "layer": "Cust",
+        "translatable_resources": {
+            "TestLU": {
+                "name": "TestLU",
+                "label": "Test Logical Unit",
+                "nested_resources": {
+                    "TEST_VIEW": {
+                        "control": "TEST_VIEW",
+                        "label": "Test View",
+                        "nested_resources": {
+                            "C_TEST_FIELD": {
+                                "control": "C_TEST_FIELD",
+                                "label": "Test Field",
+                                "is_custom": True,
+                                "nested_resources": {},
+                            }
+                        },
+                    }
+                },
+            }
+        },
+    }
+
+    generator = LNGGenerator("ESSPRO", "Cust")
+    content = generator.generate_header() + generator.generate_content(
+        test_data
+    )
+    print(content)
