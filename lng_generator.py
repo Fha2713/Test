@@ -1,32 +1,25 @@
 """
 IFS .lng File Generator
-Generates language files with proper CS/CE block structure.
-Existing files are parsed and merged so repeated runs extend the output
-without duplicating resource paths.
+Generates language files with proper CS/CE block structure
 """
 
 from copy import deepcopy
+from typing import Dict, Any, List
 from pathlib import Path
-from typing import Any, Dict, List
 
 
 class LNGGenerator:
-    """Generator for IFS .lng language files."""
-
-    def __init__(
-        self,
-        module: str,
-        layer: str,
-        main_type: str = "LU",
-        sub_type: str = "Logical Unit",
-    ):
+    """Generator for IFS .lng language files"""
+    
+    """Type und Subtype darf nicht hardcodiert sien"""
+    def __init__(self, module: str, layer: str, main_type: str, sub_type: str):
         self.module = module
         self.layer = layer
         self.main_type = main_type
         self.sub_type = sub_type
-
+        
     def generate_header(self) -> str:
-        """Generate .lng file header."""
+        """Generate .lng file header"""
         header = [
             "-------------------------------------------------------",
             "File Type: IFS Foundation Language File",
@@ -37,45 +30,47 @@ class LNGGenerator:
             f"Main Type: {self.main_type}",
             f"Sub Type: {self.sub_type}",
             "Content: ",
-            "-------------------------------------------------------",
+            "-------------------------------------------------------"
         ]
-        return "\r\n".join(header) + "\r\n"
-
+        return '\r\n'.join(header) + '\r\n'
+    
     def generate_content(self, data: Dict[str, Any]) -> str:
         """
-        Generate complete .lng file content.
-
+        Generate complete .lng file content
+        
         Args:
-            data: Parsed and filtered data structure.
-
+            data: Parsed and filtered data structure
+            
         Returns:
-            Complete .lng file content as string.
+            Complete .lng file content as string
         """
+
         lines: List[str] = []
 
-        for resource_data in data["translatable_resources"].values():
+        for resource_data in data.get("translatable_resources", data.get("logical_units", {})).values():
             lines.extend(self._generate_translatable_resource_block(resource_data, indent_level=0))
 
         return "".join(lines)
+    
 
-    def _generate_translatable_resource_block(
-        self,
-        resource_data: Dict[str, Any],
-        indent_level: int,
-    ) -> List[str]:
-        """Generate CS/CE block for a top-level TranslatableResource."""
+
+    """Ändern das nicht nur Logical Units benutzt werden können, sondern verschiedene Types"""
+    def _generate_translatable_resource_block(self, resource_data: Dict[str, Any], indent_level: int) -> List[str]:
+        """Generate CS/CE block for a Logical Unit"""
         lines: List[str] = []
-        indent = "\t" * indent_level
-
-        resource_name = resource_data["name"]
+        indent = '\t' * indent_level
+        
+        # A:Prompt for LU
+        resource_name = resource_data.get("name") or resource_data.get("id")
         resource_type = resource_data.get("type") or self.sub_type
         lines.append(f"{indent}CS:{resource_name}^{self.main_type}^{resource_type}^N^N\r\n")
 
         resource_label = resource_data.get("label", "")
         if resource_label:
-            lines.append(f"{indent}\tA:Prompt^{resource_label}^\r\n")
+            lines.append(f"{indent}\tA:{resource_name}^{resource_label}^\r\n")
 
-        for nested_resource_data in resource_data.get("nested_resources", {}).values():
+        nested_resources = resource_data.get("nested_resources")
+        for nested_resource_data in nested_resources.values():
             lines.extend(
                 self._generate_nested_resource_block(
                     nested_resource_data,
@@ -83,27 +78,27 @@ class LNGGenerator:
                 )
             )
 
+        # CE line for LU
         lines.append(f"{indent}CE:\r\n")
+        
         return lines
-
-    def _generate_nested_resource_block(
-        self,
-        resource_data: Dict[str, Any],
-        indent_level: int,
-    ) -> List[str]:
-        """Generate CS/CE block for a nested Resource."""
+    
+    def _generate_nested_resource_block(self, resource_data: Dict[str, Any], indent_level: int) -> List[str]:
+        """Generate CS/CE block for a View"""
         lines: List[str] = []
-        indent = "\t" * indent_level
-
-        resource_control = resource_data["control"]
-        resource_type = resource_data.get("subtype") or "Resource"
+        indent = '\t' * indent_level
+        
+        # CS line for View
+        resource_control = resource_data.get("control") or resource_data.get("name") or resource_data.get("id")
+        resource_type = resource_data.get("subtype") or resource_data.get("type") or "Resource"
         lines.append(f"{indent}CS:{resource_control}^{self.main_type}^{resource_type}^N^N\r\n")
 
         resource_label = resource_data.get("label", "")
-        if resource_label and resource_data.get("is_custom", False):
-            lines.append(f"{indent}\tA:Prompt^{resource_label}^\r\n")
+        if resource_label:
+            lines.append(f"{indent}\tA:{resource_control}^{resource_label}^\r\n")
 
-        for nested_resource_data in resource_data.get("nested_resources", {}).values():
+        nested_resources = resource_data.get("nested_resources")
+        for nested_resource_data in nested_resources.values():
             lines.extend(
                 self._generate_nested_resource_block(
                     nested_resource_data,
@@ -111,65 +106,15 @@ class LNGGenerator:
                 )
             )
 
+        # CE line for View
         lines.append(f"{indent}CE:\r\n")
+        
         return lines
+    
+    """Eventuell Wrapper einbauen"""
+    
 
-    def _generate_lu_block(
-        self,
-        resource_data: Dict[str, Any],
-        indent_level: int,
-    ) -> List[str]:
-        """Backward-compatible wrapper for old method name."""
-        return self._generate_translatable_resource_block(resource_data, indent_level)
-
-    def _generate_view_block(
-        self,
-        resource_data: Dict[str, Any],
-        indent_level: int,
-    ) -> List[str]:
-        """Backward-compatible wrapper for old method name."""
-        return self._generate_nested_resource_block(resource_data, indent_level)
-
-    def _generate_column_block(
-        self,
-        resource_data: Dict[str, Any],
-        indent_level: int,
-    ) -> List[str]:
-        """Backward-compatible wrapper for old method name."""
-        return self._generate_nested_resource_block(resource_data, indent_level)
-
-    def generate_file(
-        self,
-        data: Dict[str, Any],
-        output_path: str,
-    ) -> str:
-        """
-        Generate complete .lng file.
-
-        The target file is rewritten from the already merged data structure.
-        """
-        header = self.generate_header()
-        content = self.generate_content(data)
-        full_content = header + content
-
-        output_file = Path(output_path)
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(
-            output_file,
-            "w",
-            encoding="utf-8",
-            newline="",
-        ) as file:
-            file.write(full_content)
-
-        return str(output_file)
-
-    def merge_with_existing(
-        self,
-        new_data: Dict[str, Any],
-        existing_file: str,
-    ) -> Dict[str, Any]:
+    def merge_with_existing(self, new_data: Dict[str, Any], existing_file: str,) -> Dict[str, Any]:
         """
         Merge new XML data with an existing .lng file.
 
@@ -181,18 +126,14 @@ class LNGGenerator:
         if not existing_path.exists():
             return deepcopy(new_data)
 
-        existing_data = self._parse_existing_file(existing_path)
+        existing_data = self.parse_existing_file(existing_path)
 
         if not existing_data["translatable_resources"]:
             return deepcopy(new_data)
 
         return self._merge_data(existing_data, new_data)
 
-    def _merge_data(
-        self,
-        existing_data: Dict[str, Any],
-        new_data: Dict[str, Any],
-    ) -> Dict[str, Any]:
+    def _merge_data(self, existing_data: Dict[str, Any], new_data: Dict[str, Any],) -> Dict[str, Any]:
         """Merge two internal data structures without duplicate paths."""
         merged_data = deepcopy(existing_data)
 
@@ -247,12 +188,7 @@ class LNGGenerator:
 
         return merged_data
 
-    def _merge_resource_data(
-        self,
-        existing_resource_data: Dict[str, Any],
-        new_resource_data: Dict[str, Any],
-        resource_id: str,
-    ):
+    def _merge_resource_data(self, existing_resource_data: Dict[str, Any], new_resource_data: Dict[str, Any], resource_id: str,):
         """Merge one resource node recursively."""
         if not existing_resource_data.get("name"):
             existing_resource_data["name"] = new_resource_data.get("name", resource_id)
@@ -295,32 +231,46 @@ class LNGGenerator:
                 new_nested_resource_data,
                 nested_resource_id,
             )
-
-    def _parse_existing_file(
-        self,
-        existing_file: Path,
-    ) -> Dict[str, Any]:
+    
+    def generate_file(self, data: Dict[str, Any], output_path: str) -> str:
         """
-        Parse an existing .lng file into the internal data structure.
-
-        The parser uses indentation only for hierarchy depth and keeps all
-        resource types from the CS line.
+        Generate complete .lng file
+        
+        Args:
+            data: Parsed and filtered data structure
+            output_path: Path to write the file
+            
+        Returns:
+            Path to generated file
         """
-        data: Dict[str, Any] = {
-            "type": self.main_type,
-            "sub_type": self.sub_type,
-            "module": self.module,
-            "layer": self.layer,
-            "translatable_resources": {},
+        header = self.generate_header()
+        content = self.generate_content(data)
+        
+        full_content = header + content
+        
+        output_file = Path(output_path)
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        
+        with open(output_file, 'w', encoding='utf-8', newline='') as f:
+            f.write(full_content)
+        
+        return str(output_file)
+    
+
+    """Methode parse_existing_file wurde von Mario hinzugefügt"""
+    def parse_existing_file(self, existing_file: Path) -> Dict[str, Any]:
+        """Parse an existing .lng file into the internal data structure"""
+        data = {
+            'type': self.main_type,
+            'sub_type': self.sub_type,
+            'module': self.module,
+            'layer': self.layer,
+            'translatable_resources': {}
         }
-
-        with open(
-            existing_file,
-            "r",
-            encoding="utf-8-sig",
-        ) as file:
-            lines = file.read().splitlines()
-
+        
+        with open(existing_file, 'r', encoding='utf-8-sig') as f:
+            lines = f.read().splitlines()
+        
         resource_stack: List[Dict[str, Any]] = []
 
         for raw_line in lines:
@@ -368,7 +318,7 @@ class LNGGenerator:
                             "control": control,
                             "subtype": resource_type or "Resource",
                             "label": control,
-                            "is_custom": control.startswith("C_"),
+                            "is_custom": control.split(".")[-1].startswith(('C', 'Dm')),
                             "nested_resources": {},
                         },
                     )
@@ -391,51 +341,50 @@ class LNGGenerator:
                     resource_stack[resource_indent]["label"] = label
 
         return data
-
-    def get_file_name(
-        self,
-        module: str,
-        layer: str,
-    ) -> str:
+    
+    def get_file_name(self, module: str, layer: str) -> str:
         """
-        Get standard file name for .lng file.
-
-        Example:
-            Esspro_LU_LogicalUnit-Cust.lng
+        Get standard file name for .lng file
+        
+        Args:
+            module: Module name (e.g., ESSPRO)
+            layer: Layer name (e.g., Cust)
+            
+        Returns:
+            File name (e.g., Esspro_LU_LogicalUnit-Cust.lng)
         """
+        # Capitalize first letter, rest lowercase for module
         module_formatted = module.capitalize()
         sub_type_formatted = "".join((self.sub_type or "").split())
         return f"{module_formatted}_{self.main_type}_{sub_type_formatted}-{layer}.lng"
 
 
-if __name__ == "__main__":
-    test_data = {
-        "module": "ESSPRO",
-        "layer": "Cust",
-        "translatable_resources": {
-            "TestLU": {
-                "name": "TestLU",
-                "label": "Test Logical Unit",
-                "nested_resources": {
-                    "TEST_VIEW": {
-                        "control": "TEST_VIEW",
-                        "label": "Test View",
-                        "nested_resources": {
-                            "C_TEST_FIELD": {
-                                "control": "C_TEST_FIELD",
-                                "label": "Test Field",
-                                "is_custom": True,
-                                "nested_resources": {},
-                            }
-                        },
-                    }
-                },
-            }
-        },
-    }
-
-    generator = LNGGenerator("ESSPRO", "Cust")
-    content = generator.generate_header() + generator.generate_content(
-        test_data
-    )
-    print(content)
+# if __name__ == '__main__':
+#     # Test the generator
+#     test_data = {
+#         'module': 'ESSPRO',
+#         'layer': 'Cust',
+#         'contents': {
+#             'TestLU': {
+#                 'name': 'TestLU',
+#                 'label': 'Test Logical Unit',
+#                 'subcontents': {
+#                     'TEST_VIEW': {
+#                         'control': 'TEST_VIEW',
+#                         'label': 'Test View',
+#                         'subsubcontent': {
+#                             'C_TEST_FIELD': {
+#                                 'control': 'C_TEST_FIELD',
+#                                 'label': 'Test Field',
+#                                 'is_custom': True
+#                             }
+#                         }
+#                     }
+#                 }
+#             }
+#         }
+#     }
+    
+#     generator = LNGGenerator('ESSPRO', 'Cust')
+#     content = generator.generate_header() + generator.generate_content(test_data)
+#     print(content)
