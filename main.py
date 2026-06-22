@@ -1,219 +1,334 @@
 """
-IFS TranslatableResources XML Parser
-Extracts custom fields (C_* and DM_* prefix) from XML files
+IFS Language Automation Tool - Main Entry Point
+Orchestrates XML parsing, file generation, translation, and validation
 """
 
-import xml.etree.ElementTree as ET
-from typing import Dict, Any, List
+import sys
+import argparse
 from pathlib import Path
+from typing import List, Dict, Any
+
+from parser import IFSXMLParser
+from lng_generator import LNGGenerator
+from trs_generator import TRSGenerator
+from translator import IFSTranslator
+from validator import IFSValidator
+from logger import IFSLogger
 
 
-class IFSXMLParser:
-    """Parser for IFS TranslatableResources XML files"""
+class IFSLanguageAutomation:
+    """Main automation orchestrator"""
+    """standardmäßige Sprache auf Deutsch umgebaut von Mario (sv-SE auf de-DE)"""
     """DM_-Präfix von Mario hinzugefügt"""
     
-    NAMESPACE = {'ifs': 'types.scan.translation.fnd.ifsworld.com'}
-    
-    def __init__(self, xml_path: str):
+    def __init__(self, xml_path: str, output_dir: str = None, languages: List[str] = None, 
+                 translation_backend: str = 'dictionary', api_key: str = None):
         self.xml_path = Path(xml_path)
-        self.tree = None
-        self.root = None
+        self.output_dir = Path(output_dir) if output_dir else self.xml_path.parent
+        self.languages = languages or ['de-DE']
         
-    def parse(self) -> Dict[str, Any]:
-        """
-        Parse XML file and extract structure
+        # Initialize components
+        self.logger = IFSLogger(self.output_dir / 'Log.txt')
+        self.parser = IFSXMLParser(self.xml_path)
+        self.translator = IFSTranslator(
+            backend=translation_backend,
+            api_key=api_key,
+            dictionary_dir=self.xml_path.parent,
+        )
+        self.validator = IFSValidator()
         
-        Returns:
-            Dictionary containing module, layer, and logical unit hierarchy
-        """
-        self.tree = ET.parse(self.xml_path)
-        self.root = self.tree.getroot()
+        # Data storage
+        self.parsed_data = None
+        self.custom_data = None
+        self.translations = {}
         
-        # Extract root attributes
-        result = {
-            'type': self.root.get('type'),
-            'module': self.root.get('module'),
-            'version': self.root.get('version'),
-            'layer': self.root.get('layer'),
-            'sub_type': None,
-            'translatable_resources': {}
-        }
-        
-        # Process each TranslatableResource (Logical Unit)
-        # Use .// to search recursively and handle any namespace
-        for resource_elem in self.root:
-            if 'TranslatableResource' in resource_elem.tag:
-                resource_data = self._parse_translatable_resource(resource_elem)
-                if resource_data:
-                    resource_id = resource_elem.get('ID')
-                    if not result.get('sub_type'):
-                        result['sub_type'] = resource_elem.get('type')
-                    result['translatable_resources'][resource_id] = resource_data
-        
-        return result
-    
-    """label braucht es auch nicht unbedingt"""
-    def _parse_translatable_resource(self, resource_elem: ET.Element) -> Dict[str, Any]:
-        """Parse a top-level TranslatableResource element"""
-        resource_data = {
-            'id': resource_elem.get('ID'),
-            'name': resource_elem.get('name') or resource_elem.get('ID'),
-            'type': resource_elem.get('type'),
-            'label': self._get_text(resource_elem),
-            'is_custom': resource_elem.get('ID').split(".")[-1].startswith(('C', 'Dm')),
-            'nested_resources': {}
-        }
-
-        # print(resource_data)
-        
-        for child in resource_elem:
-            if 'Resource' in child.tag:
-                nested_resource_data = self._parse_nested_resource(child)
-                if nested_resource_data:
-                    nested_resource_id = child.get('control') or child.get('ID')
-                    resource_data['nested_resources'][nested_resource_id] = nested_resource_data
-        
-        # print(resource_data)
-        return resource_data
-
-    
-    """label muss nicht immer dabei sein"""
-    def _parse_nested_resource(self, resource_elem: ET.Element) -> Dict[str, Any]:
-        """Parse a nested Resource element recursively"""
-        resource_control = resource_elem.get('control') or resource_elem.get('ID')
-        resource_data = {
-            'id': resource_elem.get('ID'),
-            'control': resource_control,
-            'subtype': resource_elem.get('subtype'),
-            'label': self._get_text(resource_elem),
-            'is_custom': resource_control.split(".")[-1].startswith(('C', 'Dm')) if resource_control else False,
-            'nested_resources': {}
-        }
-        
-        for child in resource_elem:
-            if 'Resource' in child.tag:
-                nested_resource_data = self._parse_nested_resource(child)
-                if nested_resource_data:
-                    nested_resource_id = child.get('control') or child.get('ID')
-                    resource_data['nested_resources'][nested_resource_id] = nested_resource_data
-        
-        # print(resource_data)
-        return resource_data
-    
-    """Text ist nicht immer CDATA"""
-    def _get_text(self, elem: ET.Element) -> str:
-        """Extract text from CDATA section"""
-        # Find Text element - iterate through children
-        for child in elem:
-            if 'Text' in child.tag:
-                if child.text:
-                    return child.text.strip()
-        return ''
-    
-    """Custom Fields achtet nur noch auf 'Logical Unit' ID nicht mehr auf 'Control' """ 
-    def extract_custom_fields(self, parsed_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Filter to only include custom fields (C_* prefix)
-        
-        Args:
-            parsed_data: Full parsed data structure
+    def run(self):
+        """Execute the complete automation workflow"""
+        try:
+            self.logger.info("=" * 60)
+            self.logger.info("IFS Language Automation Tool - Starting")
+            self.logger.info("=" * 60)
             
-        Returns:
-            Filtered data containing only custom fields
-        """
-        result = {
-            'type': parsed_data['type'],
-            'module': parsed_data['module'],
-            'version': parsed_data['version'],
-            'layer': parsed_data['layer'],
-            'sub_type': parsed_data.get('sub_type'),
-            'translatable_resources': {}
-        }
-        
-        for resource_id, resource_data in parsed_data['translatable_resources'].items():
-            filtered_resource = {
-                'id': resource_data['id'],
-                'name': resource_data['name'],
-                'type': resource_data['type'],
-                'label': resource_data['label'],
-                'nested_resources': {}
-            }
+            # Step 1: Parse XML
+            self._parse_xml()
             
-            for nested_resource_id, nested_resource_data in resource_data['nested_resources'].items():
-                filtered_nested_resource = self._filter_custom_resources(nested_resource_data)
-                if filtered_nested_resource:
-                    filtered_resource['nested_resources'][nested_resource_id] = filtered_nested_resource
+            # Step 2: Extract custom fields
+            self._extract_custom_fields()
             
-            if filtered_resource['nested_resources']:
-                result['translatable_resources'][resource_id] = filtered_resource
-        
-        # print(result)
-        return result
-
+            if not self.custom_data['translatable_resources']:
+                self.logger.info(
+                    f"No custom fields (C_*, DM_*) in {self.xml_path}; skipping file generation and validation."
+                )
+            else:
+                # Step 3: Generate .lng file
+                self._generate_lng_file()
+                
+                # Step 4: Translate labels
+                self._translate_labels()
+                
+                # Step 5: Generate .trs files
+                self._generate_trs_files()
+                
+                # Step 6: Validate all files
+                self._validate_files()
+            
+            # Step 7: Write log
+            self.logger.info("=" * 60)
+            self.logger.info("IFS Language Automation Tool - Completed Successfully")
+            self.logger.info("=" * 60)
+            self.logger.write_to_file()
+            
+            print("\n" + "=" * 60)
+            print("SUCCESS: All files generated and validated")
+            print("=" * 60)
+            print(f"\nGenerated files in: {self.output_dir}")
+            print(self.logger.get_summary())
+            
+        except Exception as e:
+            self.logger.error(f"Fatal error: {e}")
+            self.logger.write_to_file()
+            print(f"\nERROR: {e}")
+            sys.exit(1)
     
-    def _filter_custom_resources(self, resource_data: Dict[str, Any], keep_full_branch: bool = False) -> Dict[str, Any]:
-        """Return resource with only custom nested resources, or None if empty"""
+    def _parse_xml(self):
+        """Step 1: Parse XML file"""
+        self.logger.log_parsing_start(str(self.xml_path))
+        
+        if not self.xml_path.exists():
+            raise FileNotFoundError(f"XML file not found: {self.xml_path}")
+        
+        self.parsed_data = self.parser.parse()
+        stats = self.parser.get_statistics(self.parsed_data)
+        
+        self.logger.log_parsing_complete(stats)
+    
+    def _extract_custom_fields(self):
+        """Step 2: Extract custom fields (C_* and DM_* only)"""
+        self.logger.info("Extracting custom fields (C_* and DM_* prefix only)")
+        
+        self.custom_data = self.parser.extract_custom_fields(self.parsed_data)
 
-        is_custom =  resource_data.get('is_custom', False)
-        keep_current_branch = keep_full_branch or is_custom
+        self.content_data = self.custom_data['translatable_resources']
 
-        filtered_resource = {
-            'id': resource_data.get('id'),
-            'control': resource_data.get('control'),
-            'subtype': resource_data.get('subtype'),
-            'label': resource_data.get('label', ''),
-            'is_custom': is_custom,
-            'nested_resources': {}
-        }
+        custom_count = 0
+        for resource_data in self.custom_data['translatable_resources'].values():
+            custom_count += self._log_custom_resources(resource_data)
+        
+        self.logger.success(f"Extracted {custom_count} custom fields")
+        
+        # Log skipped standard fields
+        stats = self.parser.get_statistics(self.parsed_data)
+        skipped_count = stats['standard_resources']
+        if skipped_count > 0:
+            self.logger.info(f"Skipped {skipped_count} standard fields (non-C_* and non-DM_* prefix)")
+
+    def _log_custom_resources(self, resource_data: Dict[str, Any]) -> int:
+        """Log custom resources recursively and return their count"""
+        custom_count = 0
 
         for nested_resource_id, nested_resource_data in resource_data.get('nested_resources', {}).items():
-            if keep_current_branch:
-                filtered_resource['nested_resources'][nested_resource_id] = nested_resource_data
-            else: 
-                filtered_nested_resource = self._filter_custom_resources(nested_resource_data, keep_full_branch = False)
-                if filtered_nested_resource: 
-                    filtered_resource['nested_resources'][nested_resource_id] = filtered_nested_resource
- 
-        if keep_current_branch or filtered_resource['nested_resources']:
-            return filtered_resource
+            if nested_resource_data.get('is_custom', False):
+                custom_count += 1
+                self.logger.log_field_processed(
+                    nested_resource_id,
+                    nested_resource_data.get('label', ''),
+                )
 
-        return None
-    
-    def get_statistics(self, parsed_data: Dict[str, Any]) -> Dict[str, int]:
-        """Get statistics about parsed data"""
-        stats = {
-            'total_translatable_resources': 0,
-            'total_nested_resources': 0,
-            'custom_resources': 0,
-            'standard_resources': 0
-        }
-        
-        for resource_data in parsed_data['translatable_resources'].values():
-            stats['total_translatable_resources'] += 1
-            self._count_nested_resources(resource_data, stats)
-        
-        return stats
-    
-    def _count_nested_resources(self, resource_data: Dict[str, Any], stats: Dict[str, int]):
-        """Count nested resources recursively"""
+            custom_count += self._log_custom_resources(nested_resource_data)
+
+        return custom_count
+
+    def _collect_labels(self, resource_data: Dict[str, Any], labels: set):
+        """Collect labels from custom nested resources recursively"""
         for nested_resource_data in resource_data.get('nested_resources', {}).values():
-            stats['total_nested_resources'] += 1
-            if nested_resource_data.get('is_custom'):
-                stats['custom_resources'] += 1
+            if nested_resource_data.get('label'):
+                labels.add(nested_resource_data['label'])
+
+            self._collect_labels(nested_resource_data, labels)
+
+    """file_name muss angepasst werden"""
+    def _generate_lng_file(self):
+        """Step 3: Generate .lng file"""
+        module = self.custom_data['module']
+        layer = self.custom_data['layer']
+        
+        main_type = self.custom_data.get('type')
+        sub_type = self.custom_data.get('sub_type')
+        
+        generator = LNGGenerator(module, layer, main_type, sub_type)
+        file_name = generator.get_file_name(module, layer)
+        output_path = self.output_dir / file_name
+
+        """if-else wurde von Mario hinzugefügt"""
+        if output_path.exists():
+            self.logger.info(f"Existing .lng file found: {file_name}")
+            self.logger.info("Merging existing .lng file with new XML data")
+            self.custom_data = generator.merge_with_existing(self.custom_data, str(output_path))
+            action = "Updated"
+        else:
+            self.logger.info(f"Generating new .lng file: {file_name}")
+            action = "Created"
+        
+        generated_file = generator.generate_file(self.custom_data, str(output_path))
+        
+        self.logger.log_file_generation(generated_file, "Created")
+        self.logger.success(f"Generated .lng file: {file_name}")
+    
+    def _translate_labels(self):
+        """Step 4: Translate labels to all target languages"""
+        # Collect all unique labels
+        labels = set()
+        for resource_data in self.custom_data['translatable_resources'].values():
+            if resource_data.get('label'):
+                labels.add(resource_data['label'])
+                           
+            self._collect_labels(resource_data, labels)
+        
+        labels_list = sorted(list(labels))
+        
+        # Translate to each language
+        for language in self.languages:
+            self.logger.log_translation_start(language, len(labels_list))
+            
+            translations = self.translator.translate_batch(labels_list, language)
+            self.translations[language] = translations
+            
+            self.logger.log_translation_complete(language)
+    
+    def _generate_trs_files(self):
+        """Step 5: Generate .trs files for each language"""
+        module = self.custom_data['module']
+        layer = self.custom_data['layer']
+
+        for language in self.languages:
+            main_type = self.custom_data.get('type')
+            sub_type = self.custom_data.get('sub_type')
+            generator = TRSGenerator(module, layer, language, main_type, sub_type)
+            file_name = generator.get_file_name(module, layer, language)
+            output_path = self.output_dir / file_name
+            
+            """if-else wurde von Mario hinzugefügt"""
+            if output_path.exists():
+                self.logger.info(f"Updating existing .trs file: {file_name}")
+                action = "Updated"
             else:
-                stats['standard_resources'] += 1
-            self._count_nested_resources(nested_resource_data, stats)
+                self.logger.info(f"Generating new .trs file: {file_name}")
+                action = "Created"
+                
+            translations = self.translations[language]
+            generated_file = generator.generate_file(self.custom_data, translations, str(output_path))
+            
+            self.logger.log_file_generation(generated_file, "Created")
+            self.logger.success(f"Generated .trs file: {file_name}")
+    
+    def _validate_files(self):
+        """Step 6: Validate all generated files"""
+        module = self.custom_data['module']
+        layer = self.custom_data['layer']
+        
+        # Validate .lng file
+        main_type = self.custom_data.get('type')
+        sub_type = self.custom_data.get('sub_type')
+        lng_generator = LNGGenerator(module, layer, main_type, sub_type)
+        lng_file = self.output_dir / lng_generator.get_file_name(module, layer)
+        self._validate_single_file(lng_file)
+        
+        # Validate .trs files
+        for language in self.languages:
+            trs_generator = TRSGenerator(module, layer, language, main_type, sub_type)
+            trs_file = self.output_dir / trs_generator.get_file_name(module, layer, language)
+            self._validate_single_file(trs_file)
+    
+    def _validate_single_file(self, file_path: Path):
+        """Validate a single file"""
+        self.logger.log_validation_start(str(file_path))
+        
+        is_valid, errors, warnings = self.validator.validate_file(str(file_path))
+        
+        if errors:
+            for error in errors:
+                self.logger.error(f"  {error}")
+            raise ValueError(f"Validation failed for {file_path.name}")
+        
+        if warnings:
+            for warning in warnings:
+                self.logger.warning(f"  {warning}")
+        
+        self.logger.log_validation_success(str(file_path))
+
+
+def main():
+    """Main entry point"""
+    parser = argparse.ArgumentParser(
+        description='IFS Language Automation Tool - Generate .lng and .trs files from XML'
+    )
+    
+    parser.add_argument(
+        '--xml',
+        nargs='+',
+        required=True,
+        metavar='XML',
+        help='Path(s) to TranslatableResources XML file(s). You can pass multiple files or a glob (e.g. test/test_proj/*.xml).'
+    )
+    
+    parser.add_argument(
+        '--output-dir',
+        help='Output directory (default: same as XML file)'
+    )
+    
+    parser.add_argument(
+        '--languages',
+        default='de-DE',
+        help='Comma-separated list of language codes (default: de-DE)'
+    )
+    
+    parser.add_argument(
+        '--backend',
+        choices=['dictionary', 'groq', 'google'],
+        default='dictionary',
+        help='Translation backend: dictionary (default), groq (AI), or google (Google Translate)'
+    )
+    
+    parser.add_argument(
+        '--api-key',
+        help='API key for groq or google (can also use GROQ_API_KEY or GOOGLE_API_KEY env var)'
+    )
+    
+    parser.add_argument(
+        '--validate-only',
+        action='store_true',
+        help='Only validate existing files without generating new ones'
+    )
+    
+    args = parser.parse_args()
+    
+    # Parse languages
+    languages = [lang.strip() for lang in args.languages.split(',')]
+    
+    if args.validate_only:
+        print("Validation-only mode not yet implemented")
+        sys.exit(1)
+    
+    # Only process paths that end with .xml (glob may expand to Log.txt, .lng, .trs, etc.)
+    xml_paths = [p for p in args.xml if str(p).lower().endswith(".xml")]
+    skipped = [p for p in args.xml if p not in xml_paths]
+    if skipped:
+        print(f"[INFO] Skipping non-XML path(s): {', '.join(str(p) for p in skipped)}")
+    if not xml_paths:
+        print("No XML files to process.")
+        return
+    
+    # Run automation for each XML file
+    for xml_path in xml_paths:
+        automation = IFSLanguageAutomation(
+            xml_path=xml_path,
+            output_dir=args.output_dir,
+            languages=languages,
+            translation_backend=args.backend,
+            api_key=args.api_key
+        )
+        automation.run()
 
 
 if __name__ == '__main__':
-    import sys
-    if len(sys.argv) > 1:
-        parser = IFSXMLParser(sys.argv[1])
-        data = parser.parse()
-        custom_data = parser.extract_custom_fields(data)
-        stats = parser.get_statistics(data)
-        
-        print(f"Module: {data['module']}")
-        print(f"Layer: {data['layer']}")
-        print(f"Statistics: {stats}")
-        print(f"\nCustom resources found: {stats['custom_resources']}")
+    main()
