@@ -18,12 +18,14 @@ from logger import IFSLogger
 
 class IFSLanguageAutomation:
     """Main automation orchestrator"""
+    """standardmäßige Sprache auf Deutsch umgebaut von Mario (sv-SE auf de-DE)"""
+    """DM_-Präfix von Mario hinzugefügt"""
     
     def __init__(self, xml_path: str, output_dir: str = None, languages: List[str] = None, 
                  translation_backend: str = 'dictionary', api_key: str = None):
         self.xml_path = Path(xml_path)
         self.output_dir = Path(output_dir) if output_dir else self.xml_path.parent
-        self.languages = languages or ['sv-SE', 'nb-NO']
+        self.languages = languages or ['de-DE']
         
         # Initialize components
         self.logger = IFSLogger(self.output_dir / 'Log.txt')
@@ -55,7 +57,7 @@ class IFSLanguageAutomation:
             
             if not self.custom_data['translatable_resources']:
                 self.logger.info(
-                    f"No custom fields (C_*) in {self.xml_path}; skipping file generation and validation."
+                    f"No custom fields (C_*, DM_*) in {self.xml_path}; skipping file generation and validation."
                 )
             else:
                 # Step 3: Generate .lng file
@@ -101,12 +103,13 @@ class IFSLanguageAutomation:
         self.logger.log_parsing_complete(stats)
     
     def _extract_custom_fields(self):
-        """Step 2: Extract custom fields (C_* only)"""
-        self.logger.info("Extracting custom fields (C_* prefix only)")
+        """Step 2: Extract custom fields (C_* and DM_* only)"""
+        self.logger.info("Extracting custom fields (C_* and DM_* prefix only)")
         
         self.custom_data = self.parser.extract_custom_fields(self.parsed_data)
-        
-        # Count custom fields
+
+        self.content_data = self.custom_data['translatable_resources']
+
         custom_count = 0
         for resource_data in self.custom_data['translatable_resources'].values():
             custom_count += self._log_custom_resources(resource_data)
@@ -117,8 +120,7 @@ class IFSLanguageAutomation:
         stats = self.parser.get_statistics(self.parsed_data)
         skipped_count = stats['standard_resources']
         if skipped_count > 0:
-            self.logger.info(f"Skipped {skipped_count} standard fields (non-C_* prefix)")
-    
+            self.logger.info(f"Skipped {skipped_count} standard fields (non-C_* and non-DM_* prefix)")
 
     def _log_custom_resources(self, resource_data: Dict[str, Any]) -> int:
         """Log custom resources recursively and return their count"""
@@ -139,22 +141,25 @@ class IFSLanguageAutomation:
     def _collect_labels(self, resource_data: Dict[str, Any], labels: set):
         """Collect labels from custom nested resources recursively"""
         for nested_resource_data in resource_data.get('nested_resources', {}).values():
-            if nested_resource_data.get('is_custom', False) and nested_resource_data.get('label'):
+            if nested_resource_data.get('label'):
                 labels.add(nested_resource_data['label'])
 
             self._collect_labels(nested_resource_data, labels)
 
+    """file_name muss angepasst werden"""
     def _generate_lng_file(self):
-        """Step 3: Generate or merge .lng file"""
+        """Step 3: Generate .lng file"""
         module = self.custom_data['module']
         layer = self.custom_data['layer']
         
-        main_type = self.custom_data.get('type') or 'LU'
-        sub_type = self.custom_data.get('sub_type') or 'Logical Unit'
+        main_type = self.custom_data.get('type')
+        sub_type = self.custom_data.get('sub_type')
+        
         generator = LNGGenerator(module, layer, main_type, sub_type)
         file_name = generator.get_file_name(module, layer)
         output_path = self.output_dir / file_name
-        
+
+        """if-else wurde von Mario hinzugefügt"""
         if output_path.exists():
             self.logger.info(f"Existing .lng file found: {file_name}")
             self.logger.info("Merging existing .lng file with new XML data")
@@ -166,14 +171,17 @@ class IFSLanguageAutomation:
         
         generated_file = generator.generate_file(self.custom_data, str(output_path))
         
-        self.logger.log_file_generation(generated_file, action)
-        self.logger.success(f"{action} .lng file: {file_name}")
+        self.logger.log_file_generation(generated_file, "Created")
+        self.logger.success(f"Generated .lng file: {file_name}")
     
     def _translate_labels(self):
         """Step 4: Translate labels to all target languages"""
         # Collect all unique labels
         labels = set()
         for resource_data in self.custom_data['translatable_resources'].values():
+            if resource_data.get('label'):
+                labels.add(resource_data['label'])
+                           
             self._collect_labels(resource_data, labels)
         
         labels_list = sorted(list(labels))
@@ -188,29 +196,30 @@ class IFSLanguageAutomation:
             self.logger.log_translation_complete(language)
     
     def _generate_trs_files(self):
-        """Step 5: Generate or update .trs files for each language"""
+        """Step 5: Generate .trs files for each language"""
         module = self.custom_data['module']
         layer = self.custom_data['layer']
-        
+
         for language in self.languages:
-            main_type = self.custom_data.get('type') or 'LU'
-            sub_type = self.custom_data.get('sub_type') or 'Logical Unit'
+            main_type = self.custom_data.get('type')
+            sub_type = self.custom_data.get('sub_type')
             generator = TRSGenerator(module, layer, language, main_type, sub_type)
             file_name = generator.get_file_name(module, layer, language)
             output_path = self.output_dir / file_name
             
+            """if-else wurde von Mario hinzugefügt"""
             if output_path.exists():
                 self.logger.info(f"Updating existing .trs file: {file_name}")
                 action = "Updated"
             else:
                 self.logger.info(f"Generating new .trs file: {file_name}")
                 action = "Created"
-            
+                
             translations = self.translations[language]
             generated_file = generator.generate_file(self.custom_data, translations, str(output_path))
             
-            self.logger.log_file_generation(generated_file, action)
-            self.logger.success(f"{action} .trs file: {file_name}")
+            self.logger.log_file_generation(generated_file, "Created")
+            self.logger.success(f"Generated .trs file: {file_name}")
     
     def _validate_files(self):
         """Step 6: Validate all generated files"""
@@ -218,8 +227,8 @@ class IFSLanguageAutomation:
         layer = self.custom_data['layer']
         
         # Validate .lng file
-        main_type = self.custom_data.get('type') or 'LU'
-        sub_type = self.custom_data.get('sub_type') or 'Logical Unit'
+        main_type = self.custom_data.get('type')
+        sub_type = self.custom_data.get('sub_type')
         lng_generator = LNGGenerator(module, layer, main_type, sub_type)
         lng_file = self.output_dir / lng_generator.get_file_name(module, layer)
         self._validate_single_file(lng_file)
@@ -269,8 +278,8 @@ def main():
     
     parser.add_argument(
         '--languages',
-        default='sv-SE,nb-NO',
-        help='Comma-separated list of language codes (default: sv-SE,nb-NO)'
+        default='de-DE',
+        help='Comma-separated list of language codes (default: de-DE)'
     )
     
     parser.add_argument(
