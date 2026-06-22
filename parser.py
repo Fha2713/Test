@@ -1,15 +1,16 @@
 """
 IFS TranslatableResources XML Parser
-Extracts custom fields (C_* prefix) from XML files
+Extracts custom fields (C_* and DM_* prefix) from XML files
 """
 
 import xml.etree.ElementTree as ET
-from typing import Dict, Any
+from typing import Dict, Any, List
 from pathlib import Path
 
 
 class IFSXMLParser:
     """Parser for IFS TranslatableResources XML files"""
+    """DM_-Präfix von Mario hinzugefügt"""
     
     NAMESPACE = {'ifs': 'types.scan.translation.fnd.ifsworld.com'}
     
@@ -23,11 +24,12 @@ class IFSXMLParser:
         Parse XML file and extract structure
         
         Returns:
-            Dictionary containing module, layer, and resource hierarchy
+            Dictionary containing module, layer, and logical unit hierarchy
         """
         self.tree = ET.parse(self.xml_path)
         self.root = self.tree.getroot()
         
+        # Extract root attributes
         result = {
             'type': self.root.get('type'),
             'module': self.root.get('module'),
@@ -37,6 +39,8 @@ class IFSXMLParser:
             'translatable_resources': {}
         }
         
+        # Process each TranslatableResource (Logical Unit)
+        # Use .// to search recursively and handle any namespace
         for resource_elem in self.root:
             if 'TranslatableResource' in resource_elem.tag:
                 resource_data = self._parse_translatable_resource(resource_elem)
@@ -48,6 +52,7 @@ class IFSXMLParser:
         
         return result
     
+    """label braucht es auch nicht unbedingt"""
     def _parse_translatable_resource(self, resource_elem: ET.Element) -> Dict[str, Any]:
         """Parse a top-level TranslatableResource element"""
         resource_data = {
@@ -55,8 +60,11 @@ class IFSXMLParser:
             'name': resource_elem.get('name') or resource_elem.get('ID'),
             'type': resource_elem.get('type'),
             'label': self._get_text(resource_elem),
+            'is_custom': resource_elem.get('ID').split(".")[-1].startswith(('C', 'Dm')),
             'nested_resources': {}
         }
+
+        # print(resource_data)
         
         for child in resource_elem:
             if 'Resource' in child.tag:
@@ -65,8 +73,11 @@ class IFSXMLParser:
                     nested_resource_id = child.get('control') or child.get('ID')
                     resource_data['nested_resources'][nested_resource_id] = nested_resource_data
         
+        # print(resource_data)
         return resource_data
+
     
+    """label muss nicht immer dabei sein"""
     def _parse_nested_resource(self, resource_elem: ET.Element) -> Dict[str, Any]:
         """Parse a nested Resource element recursively"""
         resource_control = resource_elem.get('control') or resource_elem.get('ID')
@@ -75,7 +86,7 @@ class IFSXMLParser:
             'control': resource_control,
             'subtype': resource_elem.get('subtype'),
             'label': self._get_text(resource_elem),
-            'is_custom': resource_control.startswith('C_') if resource_control else False,
+            'is_custom': resource_control.split(".")[-1].startswith(('C', 'Dm')) if resource_control else False,
             'nested_resources': {}
         }
         
@@ -86,24 +97,20 @@ class IFSXMLParser:
                     nested_resource_id = child.get('control') or child.get('ID')
                     resource_data['nested_resources'][nested_resource_id] = nested_resource_data
         
+        # print(resource_data)
         return resource_data
     
-    def _parse_logical_unit(self, resource_elem: ET.Element) -> Dict[str, Any]:
-        """Backward-compatible wrapper for old method name"""
-        return self._parse_translatable_resource(resource_elem)
-    
-    def _parse_view(self, resource_elem: ET.Element) -> Dict[str, Any]:
-        """Backward-compatible wrapper for old method name"""
-        return self._parse_nested_resource(resource_elem)
-    
+    """Text ist nicht immer CDATA"""
     def _get_text(self, elem: ET.Element) -> str:
         """Extract text from CDATA section"""
+        # Find Text element - iterate through children
         for child in elem:
             if 'Text' in child.tag:
                 if child.text:
                     return child.text.strip()
         return ''
     
+    """Custom Fields achtet nur noch auf 'Logical Unit' ID nicht mehr auf 'Control' """ 
     def extract_custom_fields(self, parsed_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Filter to only include custom fields (C_* prefix)
@@ -140,25 +147,34 @@ class IFSXMLParser:
             if filtered_resource['nested_resources']:
                 result['translatable_resources'][resource_id] = filtered_resource
         
+        # print(result)
         return result
+
     
-    def _filter_custom_resources(self, resource_data: Dict[str, Any]) -> Dict[str, Any]:
+    def _filter_custom_resources(self, resource_data: Dict[str, Any], keep_full_branch: bool = False) -> Dict[str, Any]:
         """Return resource with only custom nested resources, or None if empty"""
+
+        is_custom =  resource_data.get('is_custom', False)
+        keep_current_branch = keep_full_branch or is_custom
+
         filtered_resource = {
             'id': resource_data.get('id'),
             'control': resource_data.get('control'),
             'subtype': resource_data.get('subtype'),
             'label': resource_data.get('label', ''),
-            'is_custom': resource_data.get('is_custom', False),
+            'is_custom': is_custom,
             'nested_resources': {}
         }
 
         for nested_resource_id, nested_resource_data in resource_data.get('nested_resources', {}).items():
-            filtered_nested_resource = self._filter_custom_resources(nested_resource_data)
-            if filtered_nested_resource:
-                filtered_resource['nested_resources'][nested_resource_id] = filtered_nested_resource
-
-        if filtered_resource['is_custom'] or filtered_resource['nested_resources']:
+            if keep_current_branch:
+                filtered_resource['nested_resources'][nested_resource_id] = nested_resource_data
+            else: 
+                filtered_nested_resource = self._filter_custom_resources(nested_resource_data, keep_full_branch = False)
+                if filtered_nested_resource: 
+                    filtered_resource['nested_resources'][nested_resource_id] = filtered_nested_resource
+ 
+        if keep_current_branch or filtered_resource['nested_resources']:
             return filtered_resource
 
         return None
